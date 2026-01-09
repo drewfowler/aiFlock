@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/dfowler/flock/internal/setup"
 	"github.com/dfowler/flock/internal/status"
 	"github.com/dfowler/flock/internal/task"
 	"github.com/dfowler/flock/internal/tui"
@@ -21,6 +24,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "flock must be run inside a zellij session")
 		fmt.Fprintln(os.Stderr, "Start zellij first: zellij")
 		os.Exit(1)
+	}
+
+	// Check and setup global Claude hooks
+	if err := checkAndSetupHooks(); err != nil {
+		log.Fatalf("setup failed: %v", err)
 	}
 
 	// Get project directory
@@ -91,24 +99,62 @@ func cleanupStaleStatusFiles(statusDir string, manager *task.Manager) {
 	}
 }
 
-// getProjectDir returns the project directory (where configs are stored)
-func getProjectDir() string {
-	// Try to find the project root by looking for go.mod
-	dir, err := os.Getwd()
+// checkAndSetupHooks verifies and optionally installs global Claude hooks
+func checkAndSetupHooks() error {
+	checker, err := setup.NewChecker()
 	if err != nil {
-		return "."
+		return err
 	}
 
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			break
-		}
-		dir = parent
+	result, err := checker.Check()
+	if err != nil {
+		return err
 	}
 
-	return "."
+	// Already configured
+	if result.HooksInstalled && !result.NeedsUserConsent {
+		return nil
+	}
+
+	// Need user consent to install
+	fmt.Println("Flock Setup")
+	fmt.Println("===========")
+	fmt.Println()
+	fmt.Println(result.Message)
+	fmt.Println()
+	fmt.Println("Flock needs to install global Claude Code hooks to track agent status.")
+	fmt.Println("This will:")
+	fmt.Printf("  1. Install hook script to: %s\n", checker.GetHookPath())
+	fmt.Printf("  2. Update Claude settings: %s\n", checker.GetSettingsPath())
+	fmt.Println()
+	fmt.Println("The hooks are safe - they only activate when FLOCK_TASK_ID is set,")
+	fmt.Println("so they won't affect your normal Claude Code usage.")
+	fmt.Println()
+	fmt.Print("Do you want to proceed? [y/N]: ")
+
+	reader := bufio.NewReader(os.Stdin)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	response = strings.TrimSpace(strings.ToLower(response))
+	if response != "y" && response != "yes" {
+		fmt.Println()
+		fmt.Println("Setup cancelled. Flock cannot function without the hooks.")
+		fmt.Println("You can manually configure the hooks later or run flock again.")
+		os.Exit(0)
+	}
+
+	fmt.Println()
+	fmt.Print("Installing hooks... ")
+
+	if err := checker.Install(); err != nil {
+		return fmt.Errorf("installation failed: %w", err)
+	}
+
+	fmt.Println("done!")
+	fmt.Println()
+
+	return nil
 }

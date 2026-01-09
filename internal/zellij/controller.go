@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -17,7 +18,6 @@ type Controller struct {
 	layoutPath    string
 	statusDir     string
 	controllerTab string
-	flockDir      string // flock project directory (for hooks)
 }
 
 // NewController creates a new zellij controller
@@ -27,7 +27,6 @@ func NewController(configDir string) *Controller {
 		layoutPath:    layoutPath,
 		statusDir:     defaultStatusDir,
 		controllerTab: "flock",
-		flockDir:      configDir,
 	}
 }
 
@@ -56,9 +55,9 @@ func (c *Controller) NewTab(taskID, taskName, tabName, prompt, cwd string) error
 
 	// Write the claude command with environment variables to the pane
 	// Use export to ensure env vars are available to hook subprocesses
-	// FLOCK_PROJECT_DIR points to where flock hooks are located
-	claudeCmd := fmt.Sprintf("cd %q && export FLOCK_TASK_ID=%s FLOCK_TASK_NAME=%q FLOCK_TAB_NAME=%s FLOCK_STATUS_DIR=%s FLOCK_PROJECT_DIR=%q && claude %q",
-		cwd, taskID, taskName, tabName, c.statusDir, c.flockDir, prompt)
+	// Global hooks at ~/.flock/hooks/ check for FLOCK_TASK_ID
+	claudeCmd := fmt.Sprintf("cd %q && export FLOCK_TASK_ID=%s FLOCK_TASK_NAME=%q FLOCK_TAB_NAME=%s FLOCK_STATUS_DIR=%s && claude %q",
+		cwd, taskID, taskName, tabName, c.statusDir, prompt)
 	writeCmd := exec.Command("zellij", "action", "write-chars", claudeCmd)
 	if err := writeCmd.Run(); err != nil {
 		return fmt.Errorf("failed to write command: %w", err)
@@ -94,9 +93,15 @@ func (c *Controller) GoToController() error {
 
 // CloseTab closes the specified tab
 func (c *Controller) CloseTab(tabName string) error {
-	// First switch to the tab
+	// Check if the tab exists before trying to close it
+	// zellij action go-to-tab-name doesn't error on missing tabs, so we must check first
+	if !c.TabExists(tabName) {
+		return nil
+	}
+
+	// Switch to the tab
 	if err := c.GoToTab(tabName); err != nil {
-		return err
+		return nil
 	}
 
 	// Then close it
@@ -106,6 +111,23 @@ func (c *Controller) CloseTab(tabName string) error {
 	}
 
 	return nil
+}
+
+// TabExists checks if a tab with the given name exists
+func (c *Controller) TabExists(tabName string) bool {
+	cmd := exec.Command("zellij", "action", "query-tab-names")
+	output, err := cmd.Output()
+	if err != nil {
+		return false
+	}
+
+	lines := strings.Split(string(output), "\n")
+	for _, line := range lines {
+		if strings.TrimSpace(line) == tabName {
+			return true
+		}
+	}
+	return false
 }
 
 // StatusDir returns the status directory path
