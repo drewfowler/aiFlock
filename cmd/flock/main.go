@@ -41,6 +41,9 @@ func main() {
 		log.Printf("warning: failed to load tasks: %v", err)
 	}
 
+	// Clean up stale status files (for tasks that no longer exist)
+	cleanupStaleStatusFiles(statusDir, manager)
+
 	// Initialize zellij controller
 	zjController := zellij.NewController(cwd)
 
@@ -65,6 +68,26 @@ func main() {
 
 	if _, err := p.Run(); err != nil {
 		log.Fatal(err)
+	}
+}
+
+// cleanupStaleStatusFiles removes status files for tasks that no longer exist
+func cleanupStaleStatusFiles(statusDir string, manager *task.Manager) {
+	files, err := os.ReadDir(statusDir)
+	if err != nil {
+		return // Directory might not exist yet
+	}
+
+	for _, f := range files {
+		if !f.IsDir() && filepath.Ext(f.Name()) == ".status" {
+			// Extract task ID from filename (e.g., "001.status" -> "001")
+			taskID := f.Name()[:len(f.Name())-7] // Remove ".status"
+			if _, exists := manager.Get(taskID); !exists {
+				// Task doesn't exist, remove stale status file
+				statusFile := filepath.Join(statusDir, f.Name())
+				os.Remove(statusFile)
+			}
+		}
 	}
 }
 

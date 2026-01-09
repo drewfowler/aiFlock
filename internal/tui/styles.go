@@ -21,6 +21,12 @@ var (
 	// Base styles
 	baseStyle = lipgloss.NewStyle().Padding(0, 1)
 
+	// Main container with border
+	containerStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorPrimary).
+			Padding(1, 2)
+
 	// Title style
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).

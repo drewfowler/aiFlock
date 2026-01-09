@@ -12,6 +12,7 @@ import (
 type Status struct {
 	Status    string
 	TaskID    string
+	TaskName  string
 	Updated   int64
 	TabName   string
 	SessionID string
@@ -47,6 +48,8 @@ func ParseStatusFile(path string) (*Status, error) {
 			status.Status = value
 		case "task_id":
 			status.TaskID = value
+		case "task_name":
+			status.TaskName = value
 		case "updated":
 			if ts, err := strconv.ParseInt(value, 10, 64); err == nil {
 				status.Updated = ts

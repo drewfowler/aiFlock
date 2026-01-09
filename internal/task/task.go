@@ -30,16 +30,36 @@ type Task struct {
 // NewTask creates a new task with the given name and prompt
 func NewTask(id, name, prompt, cwd string) *Task {
 	now := time.Now()
+	// Format: agent-XXX-taskName (e.g., agent-001-changingReadMe)
+	sanitized := sanitizeTabName(name)
+	// Truncate task name portion to keep total tab name reasonable
+	if len(sanitized) > 15 {
+		sanitized = sanitized[:15]
+	}
+	tabName := fmt.Sprintf("agent-%s-%s", id, sanitized)
 	return &Task{
 		ID:        id,
 		Name:      name,
 		Prompt:    prompt,
 		Cwd:       cwd,
 		Status:    StatusPending,
-		TabName:   fmt.Sprintf("task-%s", id),
+		TabName:   tabName,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
+}
+
+// sanitizeTabName removes characters that might cause issues in zellij tab names
+func sanitizeTabName(name string) string {
+	result := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		// Allow alphanumeric, spaces, dashes, underscores
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ' ' || c == '-' || c == '_' {
+			result = append(result, c)
+		}
+	}
+	return string(result)
 }
 
 // Age returns the duration since the task was created

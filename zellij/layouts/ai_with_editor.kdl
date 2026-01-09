@@ -3,8 +3,16 @@ layout {
         plugin location="compact-bar"
     }
     pane split_direction="vertical" {
-      pane
-      pane command="claude"
+      pane name="editor"
+      pane name="claude"
+    }
+}
+
+// Keybindings to jump back to flock dashboard
+// Press Ctrl+g from any mode to return to flock tab
+keybinds clear-defaults=false {
+    shared_except "locked" {
+        bind "Ctrl h" { GoToTabName "flock"; }
     }
 }
 

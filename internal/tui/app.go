@@ -2,8 +2,11 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -17,6 +20,8 @@ type viewMode int
 const (
 	viewDashboard viewMode = iota
 	viewNewTask
+	viewEditTask
+	viewConfirmDelete
 )
 
 // Model is the main TUI model
@@ -35,6 +40,15 @@ type Model struct {
 	promptInput textinput.Model
 	cwdInput    textinput.Model
 	focusIndex  int
+
+	// Edit task tracking
+	editingTaskID string
+
+	// Delete confirmation tracking
+	deletingTaskID string
+
+	// Spinner for working status
+	spinner spinner.Model
 }
 
 // StatusUpdate represents a status change from the watcher
@@ -66,6 +80,14 @@ func NewModel(tasks *task.Manager, zj *zellij.Controller, statusChan chan Status
 	cwdInput.CharLimit = 200
 	cwdInput.Width = 60
 
+	// Spinner for working status
+	s := spinner.New()
+	s.Spinner = spinner.Spinner{
+		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+		FPS:    time.Millisecond * 100,
+	}
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("39")) // blue
+
 	return Model{
 		tasks:         tasks,
 		zellij:        zj,
@@ -73,6 +95,7 @@ func NewModel(tasks *task.Manager, zj *zellij.Controller, statusChan chan Status
 		nameInput:     nameInput,
 		promptInput:   promptInput,
 		cwdInput:      cwdInput,
+		spinner:       s,
 	}
 }
 
@@ -80,6 +103,7 @@ func NewModel(tasks *task.Manager, zj *zellij.Controller, statusChan chan Status
 func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		waitForStatus(m.statusUpdates),
+		m.spinner.Tick,
 	)
 }
 
@@ -99,10 +123,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
 	case StatusMsg:
-		// Update task status
-		if err := m.tasks.UpdateStatus(msg.TaskID, msg.Status); err != nil {
-			m.err = err
+		// Update task status (silently ignore if task doesn't exist)
+		if _, exists := m.tasks.Get(msg.TaskID); exists {
+			if err := m.tasks.UpdateStatus(msg.TaskID, msg.Status); err != nil {
+				m.err = err
+			}
 		}
 		// Continue listening for updates
 		return m, waitForStatus(m.statusUpdates)
@@ -113,6 +144,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateDashboard(msg)
 		case viewNewTask:
 			return m.updateNewTask(msg)
+		case viewEditTask:
+			return m.updateEditTask(msg)
+		case viewConfirmDelete:
+			return m.updateConfirmDelete(msg)
 		}
 	}
 
@@ -143,6 +178,22 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focusIndex = 0
 		return m, textinput.Blink
 
+	case "e":
+		// Edit selected task (only if PENDING)
+		if len(tasks) > 0 && m.selected < len(tasks) {
+			t := tasks[m.selected]
+			if t.Status == task.StatusPending {
+				m.mode = viewEditTask
+				m.editingTaskID = t.ID
+				m.nameInput.SetValue(t.Name)
+				m.promptInput.SetValue(t.Prompt)
+				m.cwdInput.SetValue(t.Cwd)
+				m.nameInput.Focus()
+				m.focusIndex = 0
+				return m, textinput.Blink
+			}
+		}
+
 	case "s":
 		// Start selected task
 		if len(tasks) > 0 && m.selected < len(tasks) {
@@ -152,7 +203,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if cwd == "" {
 					cwd = "."
 				}
-				if err := m.zellij.NewTab(t.ID, t.TabName, t.Prompt, cwd); err != nil {
+				if err := m.zellij.NewTab(t.ID, t.Name, t.TabName, t.Prompt, cwd); err != nil {
 					m.err = err
 				} else {
 					m.tasks.UpdateStatus(t.ID, task.StatusWorking)
@@ -172,15 +223,11 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "d":
-		// Delete selected task
+		// Show delete confirmation
 		if len(tasks) > 0 && m.selected < len(tasks) {
 			t := tasks[m.selected]
-			if err := m.tasks.Delete(t.ID); err != nil {
-				m.err = err
-			}
-			if m.selected >= len(m.tasks.List()) && m.selected > 0 {
-				m.selected--
-			}
+			m.deletingTaskID = t.ID
+			m.mode = viewConfirmDelete
 		}
 	}
 
@@ -263,11 +310,133 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// updateEditTask handles edit task form input
+func (m Model) updateEditTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+
+	case "esc":
+		m.mode = viewDashboard
+		m.nameInput.Reset()
+		m.promptInput.Reset()
+		m.cwdInput.Reset()
+		m.editingTaskID = ""
+		return m, nil
+
+	case "tab", "shift+tab", "down", "up":
+		// Cycle focus
+		if msg.String() == "shift+tab" || msg.String() == "up" {
+			m.focusIndex--
+			if m.focusIndex < 0 {
+				m.focusIndex = 2
+			}
+		} else {
+			m.focusIndex++
+			if m.focusIndex > 2 {
+				m.focusIndex = 0
+			}
+		}
+
+		m.nameInput.Blur()
+		m.promptInput.Blur()
+		m.cwdInput.Blur()
+
+		switch m.focusIndex {
+		case 0:
+			m.nameInput.Focus()
+		case 1:
+			m.promptInput.Focus()
+		case 2:
+			m.cwdInput.Focus()
+		}
+
+		return m, textinput.Blink
+
+	case "enter":
+		// Update task if name and prompt are filled
+		name := strings.TrimSpace(m.nameInput.Value())
+		prompt := strings.TrimSpace(m.promptInput.Value())
+		cwd := strings.TrimSpace(m.cwdInput.Value())
+
+		if name != "" && prompt != "" {
+			if err := m.tasks.Update(m.editingTaskID, func(t *task.Task) {
+				t.Name = name
+				t.Prompt = prompt
+				t.Cwd = cwd
+			}); err != nil {
+				m.err = err
+			}
+
+			m.mode = viewDashboard
+			m.nameInput.Reset()
+			m.promptInput.Reset()
+			m.cwdInput.Reset()
+			m.editingTaskID = ""
+		}
+		return m, nil
+	}
+
+	// Update focused input
+	var cmd tea.Cmd
+	switch m.focusIndex {
+	case 0:
+		m.nameInput, cmd = m.nameInput.Update(msg)
+	case 1:
+		m.promptInput, cmd = m.promptInput.Update(msg)
+	case 2:
+		m.cwdInput, cmd = m.cwdInput.Update(msg)
+	}
+
+	return m, cmd
+}
+
+// updateConfirmDelete handles delete confirmation input
+func (m Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		// Confirm deletion
+		if t, ok := m.tasks.Get(m.deletingTaskID); ok {
+			// Close the zellij tab if task was started
+			if t.Status != task.StatusPending && t.TabName != "" {
+				if err := m.zellij.CloseTab(t.TabName); err != nil {
+					m.err = err
+				}
+				m.zellij.GoToController()
+			}
+			// Delete the status file to prevent stale updates
+			m.zellij.DeleteStatusFile(m.deletingTaskID)
+			if err := m.tasks.Delete(m.deletingTaskID); err != nil {
+				m.err = err
+			}
+			if m.selected >= len(m.tasks.List()) && m.selected > 0 {
+				m.selected--
+			}
+		}
+		m.deletingTaskID = ""
+		m.mode = viewDashboard
+
+	case "n", "N", "esc":
+		// Cancel deletion
+		m.deletingTaskID = ""
+		m.mode = viewDashboard
+
+	case "ctrl+c":
+		return m, tea.Quit
+	}
+
+	return m, nil
+}
+
 // View renders the UI
 func (m Model) View() string {
 	switch m.mode {
 	case viewNewTask:
 		return m.viewNewTask()
+	case viewEditTask:
+		return m.viewEditTask()
+	case viewConfirmDelete:
+		return m.viewConfirmDelete()
 	default:
 		return m.viewDashboard()
 	}
@@ -288,23 +457,34 @@ func (m Model) viewDashboard() string {
 		b.WriteString("  No tasks yet. Press 'n' to create one.\n")
 	} else {
 		// Header
-		header := fmt.Sprintf("  %-4s %-30s %-10s %-12s %-6s", "#", "Task", "Status", "Tab", "Age")
+		header := fmt.Sprintf("  %-4s %-25s %-10s %-20s %-6s", "#", "Task", "Status", "Directory", "Age")
 		b.WriteString(tableHeaderStyle.Render(header))
 		b.WriteString("\n")
 
 		// Rows
 		for i, t := range tasks {
-			status := StatusStyle(string(t.Status)).Render(string(t.Status))
-			tab := t.TabName
-			if t.Status == task.StatusPending {
-				tab = "--"
+			// Show spinner next to WORKING status
+			var statusDisplay string
+			if t.Status == task.StatusWorking {
+				statusDisplay = m.spinner.View() + " " + StatusStyle(string(t.Status)).Render(string(t.Status))
+			} else {
+				statusDisplay = "  " + StatusStyle(string(t.Status)).Render(string(t.Status))
 			}
 
-			row := fmt.Sprintf("  %-4s %-30s %-10s %-12s %-6s",
+			// Show directory (use basename for brevity)
+			dir := t.Cwd
+			if dir == "" {
+				dir = "."
+			} else {
+				// Extract just the last component of the path
+				dir = filepath.Base(dir)
+			}
+
+			row := fmt.Sprintf("  %-4s %-25s %-10s %-20s %-6s",
 				t.ID,
-				truncate(t.Name, 30),
-				status,
-				tab,
+				truncate(t.Name, 25),
+				statusDisplay,
+				truncate(dir, 20),
 				t.AgeString(),
 			)
 
@@ -333,10 +513,12 @@ func (m Model) viewDashboard() string {
 	}
 
 	// Help
-	help := helpStyle.Render("[n]ew  [s]tart  [j/k]navigate  [enter]jump  [d]elete  [q]uit")
+	help := helpStyle.Render("[n]ew  [e]dit  [s]tart  [j/k]navigate  [enter]jump  [d]elete  [q]uit")
 	b.WriteString("\n" + help)
 
-	return baseStyle.Render(b.String())
+	// Wrap in bordered container and center
+	content := containerStyle.Render(b.String())
+	return m.centerContent(content)
 }
 
 // viewNewTask renders the new task form
@@ -366,7 +548,69 @@ func (m Model) viewNewTask() string {
 	help := helpStyle.Render("[tab]next field  [enter]create  [esc]cancel")
 	b.WriteString(help)
 
-	return modalStyle.Render(b.String())
+	return m.centerContent(modalStyle.Render(b.String()))
+}
+
+// viewEditTask renders the edit task form
+func (m Model) viewEditTask() string {
+	var b strings.Builder
+
+	title := titleStyle.Render("Edit Task")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	// Form fields
+	b.WriteString(inputLabelStyle.Render("Name:"))
+	b.WriteString("\n")
+	b.WriteString(m.nameInput.View())
+	b.WriteString("\n\n")
+
+	b.WriteString(inputLabelStyle.Render("Prompt:"))
+	b.WriteString("\n")
+	b.WriteString(m.promptInput.View())
+	b.WriteString("\n\n")
+
+	b.WriteString(inputLabelStyle.Render("Working Directory:"))
+	b.WriteString("\n")
+	b.WriteString(m.cwdInput.View())
+	b.WriteString("\n\n")
+
+	help := helpStyle.Render("[tab]next field  [enter]save  [esc]cancel")
+	b.WriteString(help)
+
+	return m.centerContent(modalStyle.Render(b.String()))
+}
+
+// viewConfirmDelete renders the delete confirmation dialog
+func (m Model) viewConfirmDelete() string {
+	var b strings.Builder
+
+	t, ok := m.tasks.Get(m.deletingTaskID)
+	if !ok {
+		return m.viewDashboard()
+	}
+
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(colorError).
+		Render("Delete Task?")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	b.WriteString(fmt.Sprintf("Are you sure you want to delete task '%s'?\n", t.Name))
+
+	if t.Status != task.StatusPending && t.Status != task.StatusDone {
+		warning := lipgloss.NewStyle().
+			Foreground(colorWarning).
+			Render("Warning: This task is still running!")
+		b.WriteString("\n" + warning + "\n")
+	}
+
+	b.WriteString("\n")
+	help := helpStyle.Render("[y]es  [n]o  [esc]cancel")
+	b.WriteString(help)
+
+	return m.centerContent(modalStyle.Render(b.String()))
 }
 
 // truncate truncates a string to the given length
@@ -375,4 +619,28 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max-3] + "..."
+}
+
+// centerContent centers the content both horizontally and vertically
+func (m Model) centerContent(content string) string {
+	// Get content dimensions
+	contentWidth := lipgloss.Width(content)
+	contentHeight := lipgloss.Height(content)
+
+	// Calculate padding for centering
+	horizontalPadding := 0
+	verticalPadding := 0
+
+	if m.width > contentWidth {
+		horizontalPadding = (m.width - contentWidth) / 2
+	}
+	if m.height > contentHeight {
+		verticalPadding = (m.height - contentHeight) / 2
+	}
+
+	// Apply centering
+	return lipgloss.NewStyle().
+		PaddingLeft(horizontalPadding).
+		PaddingTop(verticalPadding).
+		Render(content)
 }
