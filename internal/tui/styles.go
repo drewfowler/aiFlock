@@ -79,6 +79,26 @@ var (
 				BorderForeground(colorSecondary).
 				Padding(0, 2).
 				MarginTop(1)
+
+	// Panel styles - inactive border
+	inactiveBoxStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(colorSecondary)
+
+	// Panel styles - active border (highlighted)
+	activeBoxStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(colorPrimary)
+
+	// Panel title style
+	panelTitleStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(colorPrimary)
+
+	// Panel title style for active panel
+	activePanelTitleStyle = lipgloss.NewStyle().
+				Bold(true).
+				Foreground(lipgloss.Color("212"))
 )
 
 // StatusStyle returns the style for a given status

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/dfowler/flock/internal/config"
 	"github.com/dfowler/flock/internal/setup"
 	"github.com/dfowler/flock/internal/status"
 	"github.com/dfowler/flock/internal/task"
@@ -29,6 +30,12 @@ func main() {
 	// Check and setup global Claude hooks
 	if err := checkAndSetupHooks(); err != nil {
 		log.Fatalf("setup failed: %v", err)
+	}
+
+	// Load configuration
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
 	}
 
 	// Get project directory
@@ -71,7 +78,7 @@ func main() {
 	defer watcher.Stop()
 
 	// Create and run TUI
-	model := tui.NewModel(manager, zjController, statusChan)
+	model := tui.NewModel(manager, zjController, cfg, statusChan)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {

@@ -62,27 +62,34 @@ func (m *Manager) Save() error {
 }
 
 // Create creates a new task
-func (m *Manager) Create(name, prompt, cwd string) (*Task, error) {
+func (m *Manager) Create(name, promptFile, cwd string) (*Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	id := fmt.Sprintf("%03d", m.counter)
 	m.counter++
 
-	task := NewTask(id, name, prompt, cwd)
+	task := NewTask(id, name, promptFile, cwd)
 	m.tasks[id] = task
 	m.order = append(m.order, id)
 
 	// Save after creation
 	tasks := make([]*Task, 0, len(m.order))
-	for _, id := range m.order {
-		tasks = append(tasks, m.tasks[id])
+	for _, oid := range m.order {
+		tasks = append(tasks, m.tasks[oid])
 	}
 	if err := m.store.Save(tasks); err != nil {
 		return nil, err
 	}
 
 	return task, nil
+}
+
+// NextID returns the next task ID that will be assigned (without incrementing)
+func (m *Manager) NextID() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return fmt.Sprintf("%03d", m.counter)
 }
 
 // Get returns a task by ID
@@ -108,8 +115,8 @@ func (m *Manager) Update(id string, fn func(*Task)) error {
 
 	// Save after update
 	tasks := make([]*Task, 0, len(m.order))
-	for _, id := range m.order {
-		tasks = append(tasks, m.tasks[id])
+	for _, oid := range m.order {
+		tasks = append(tasks, m.tasks[oid])
 	}
 	return m.store.Save(tasks)
 }
@@ -143,8 +150,8 @@ func (m *Manager) Delete(id string) error {
 
 	// Save after deletion
 	tasks := make([]*Task, 0, len(m.order))
-	for _, id := range m.order {
-		tasks = append(tasks, m.tasks[id])
+	for _, oid := range m.order {
+		tasks = append(tasks, m.tasks[oid])
 	}
 	return m.store.Save(tasks)
 }

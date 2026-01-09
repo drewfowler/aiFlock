@@ -36,7 +36,8 @@ func (c *Controller) EnsureStatusDir() error {
 }
 
 // NewTab creates a new zellij tab for a task
-func (c *Controller) NewTab(taskID, taskName, tabName, prompt, cwd string) error {
+// promptOrFile is either a path to a markdown file (if isFile=true) or inline prompt text (if isFile=false)
+func (c *Controller) NewTab(taskID, taskName, tabName, promptOrFile, cwd string, isFile bool) error {
 	if err := c.EnsureStatusDir(); err != nil {
 		return fmt.Errorf("failed to create status dir: %w", err)
 	}
@@ -56,8 +57,16 @@ func (c *Controller) NewTab(taskID, taskName, tabName, prompt, cwd string) error
 	// Write the claude command with environment variables to the pane
 	// Use export to ensure env vars are available to hook subprocesses
 	// Global hooks at ~/.flock/hooks/ check for FLOCK_TASK_ID
+	var claudePrompt string
+	if isFile {
+		// Tell Claude to review the prompt file using @ syntax
+		claudePrompt = fmt.Sprintf("Review and complete the task described in @%s", promptOrFile)
+	} else {
+		// Legacy: use inline prompt directly
+		claudePrompt = promptOrFile
+	}
 	claudeCmd := fmt.Sprintf("cd %q && export FLOCK_TASK_ID=%s FLOCK_TASK_NAME=%q FLOCK_TAB_NAME=%s FLOCK_STATUS_DIR=%s && claude %q",
-		cwd, taskID, taskName, tabName, c.statusDir, prompt)
+		cwd, taskID, taskName, tabName, c.statusDir, claudePrompt)
 	writeCmd := exec.Command("zellij", "action", "write-chars", claudeCmd)
 	if err := writeCmd.Run(); err != nil {
 		return fmt.Errorf("failed to write command: %w", err)
