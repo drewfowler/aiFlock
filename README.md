@@ -21,8 +21,8 @@ Monitor all your AI coding sessions at a glance, see which ones need attention, 
 
 ## TODO
 
-- [ ] why am I getting the missing task_id in status file error?
-- [ ] create another bordered section for status's. We can put errors and such here. 
+- [x] why am I getting the missing task_id in status file error?
+- [x] create another bordered section for status's. We can put errors such as the task_id print
 
 ## Future
 - [ ] Move tasks to "agents" section and create separate "tasks" section for .md-based task files (enables easier editing and task queuing)

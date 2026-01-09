@@ -24,6 +24,13 @@ const (
 	viewConfirmDelete
 )
 
+// Message represents a status message to display in the TUI
+type Message struct {
+	Text      string
+	IsError   bool
+	Timestamp time.Time
+}
+
 // Model is the main TUI model
 type Model struct {
 	tasks         *task.Manager
@@ -49,6 +56,9 @@ type Model struct {
 
 	// Spinner for working status
 	spinner spinner.Model
+
+	// Status messages for the messages panel
+	messages []Message
 }
 
 // StatusUpdate represents a status change from the watcher
@@ -107,6 +117,20 @@ func (m Model) Init() tea.Cmd {
 	)
 }
 
+// addMessage adds a message to the messages panel (keeps last 5 messages)
+func (m *Model) addMessage(text string, isError bool) {
+	msg := Message{
+		Text:      text,
+		IsError:   isError,
+		Timestamp: time.Now(),
+	}
+	m.messages = append(m.messages, msg)
+	// Keep only last 5 messages
+	if len(m.messages) > 5 {
+		m.messages = m.messages[len(m.messages)-5:]
+	}
+}
+
 // waitForStatus waits for status updates from the watcher
 func waitForStatus(ch chan StatusUpdate) tea.Cmd {
 	return func() tea.Msg {
@@ -130,9 +154,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case StatusMsg:
 		// Update task status (silently ignore if task doesn't exist)
-		if _, exists := m.tasks.Get(msg.TaskID); exists {
+		if t, exists := m.tasks.Get(msg.TaskID); exists {
+			oldStatus := t.Status
 			if err := m.tasks.UpdateStatus(msg.TaskID, msg.Status); err != nil {
 				m.err = err
+				m.addMessage(fmt.Sprintf("Error updating %s: %v", t.Name, err), true)
+			} else if oldStatus != msg.Status {
+				m.addMessage(fmt.Sprintf("%s → %s", t.Name, msg.Status), false)
 			}
 		}
 		// Continue listening for updates
@@ -506,18 +534,45 @@ func (m Model) viewDashboard() string {
 	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render(stats))
 	b.WriteString("\n")
 
-	// Error
-	if m.err != nil {
-		errMsg := lipgloss.NewStyle().Foreground(colorError).Render(fmt.Sprintf("Error: %v", m.err))
-		b.WriteString("\n" + errMsg + "\n")
-	}
-
 	// Help
 	help := helpStyle.Render("[n]ew  [e]dit  [s]tart  [j/k]navigate  [enter]jump  [d]elete  [q]uit")
 	b.WriteString("\n" + help)
 
-	// Wrap in bordered container and center
-	content := containerStyle.Render(b.String())
+	// Wrap task section in bordered container
+	taskSection := containerStyle.Render(b.String())
+
+	// Messages panel
+	var msgBuilder strings.Builder
+	msgBuilder.WriteString(lipgloss.NewStyle().Bold(true).Foreground(colorSecondary).Render("Messages"))
+	msgBuilder.WriteString("\n")
+
+	if len(m.messages) == 0 && m.err == nil {
+		msgBuilder.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("  No recent messages"))
+	} else {
+		// Show error if present
+		if m.err != nil {
+			errLine := lipgloss.NewStyle().Foreground(colorError).Render(fmt.Sprintf("  Error: %v", m.err))
+			msgBuilder.WriteString(errLine)
+			msgBuilder.WriteString("\n")
+		}
+		// Show recent messages
+		for _, msg := range m.messages {
+			timestamp := msg.Timestamp.Format("15:04:05")
+			var line string
+			if msg.IsError {
+				line = lipgloss.NewStyle().Foreground(colorError).Render(fmt.Sprintf("  [%s] %s", timestamp, msg.Text))
+			} else {
+				line = lipgloss.NewStyle().Foreground(colorSecondary).Render(fmt.Sprintf("  [%s] %s", timestamp, msg.Text))
+			}
+			msgBuilder.WriteString(line)
+			msgBuilder.WriteString("\n")
+		}
+	}
+
+	messagesSection := messagesPanelStyle.Render(msgBuilder.String())
+
+	// Combine both sections vertically
+	content := lipgloss.JoinVertical(lipgloss.Left, taskSection, messagesSection)
 	return m.centerContent(content)
 }
 

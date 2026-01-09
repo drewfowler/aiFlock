@@ -72,6 +72,13 @@ var (
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(colorPrimary).
 			Padding(1, 2)
+
+	// Messages panel style
+	messagesPanelStyle = lipgloss.NewStyle().
+				Border(lipgloss.RoundedBorder()).
+				BorderForeground(colorSecondary).
+				Padding(0, 2).
+				MarginTop(1)
 )
 
 // StatusStyle returns the style for a given status

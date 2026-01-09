@@ -98,7 +98,8 @@ func (w *Watcher) handleFile(path string) {
 
 	status, err := ParseStatusFile(path)
 	if err != nil {
-		log.Printf("failed to parse status file %s: %v", path, err)
+		// Silently skip invalid status files (e.g., from non-flock Claude Code sessions)
+		// These are expected when Claude Code runs outside of flock context
 		return
 	}
 
