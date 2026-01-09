@@ -561,32 +561,37 @@ func (m Model) View() string {
 func (m Model) viewDashboard() string {
 	// Calculate responsive dimensions
 	availableWidth := m.width - 4 // Account for centering padding
-	availableHeight := m.height - 2
 
-	// Minimum dimensions
+	// Minimum width
 	if availableWidth < 60 {
 		availableWidth = 60
 	}
-	if availableHeight < 20 {
-		availableHeight = 20
+
+	// Calculate task panel height based on actual content
+	// Header (1) + tasks + stats (2) + padding (2) + border (2) = 7 + num tasks
+	numTasks := m.tasks.Count()
+	if numTasks == 0 {
+		numTasks = 1 // "No tasks" message
+	}
+	tasksHeight := numTasks + 7
+	if tasksHeight > 15 {
+		tasksHeight = 15 // Cap at reasonable height
 	}
 
-	// Panel heights - tasks panel takes most space, messages panel is smaller
-	tasksHeight := availableHeight - 12 // Leave room for messages panel
-	if tasksHeight < 10 {
-		tasksHeight = 10
-	}
-	messagesHeight := 8
+	// Fixed compact heights for other panels
+	promptHeight := 6
+	messagesHeight := 5
 
 	// Render panels
 	tasksPanel := m.renderTasksPanel(availableWidth-4, tasksHeight)
+	promptPanel := m.renderPromptPanel(availableWidth-4, promptHeight)
 	messagesPanel := m.renderMessagesPanel(availableWidth-4, messagesHeight)
 
 	// Help bar
 	helpBar := helpStyle.Render("[n]ew  [e]dit  [s]tart  [j/k]navigate  [enter]jump  [d]elete  [q]uit")
 
 	// Compose layout
-	content := lipgloss.JoinVertical(lipgloss.Left, tasksPanel, messagesPanel, helpBar)
+	content := lipgloss.JoinVertical(lipgloss.Left, tasksPanel, promptPanel, messagesPanel, helpBar)
 	return m.centerContent(content)
 }
 
@@ -836,6 +841,62 @@ func (m Model) renderMessagesPanel(width, height int) string {
 	}
 
 	return m.renderPanel("Messages", b.String(), width, height, false)
+}
+
+// renderPromptPanel renders the prompt panel showing the selected task's .md file content
+func (m Model) renderPromptPanel(width, height int) string {
+	var b strings.Builder
+
+	tasks := m.tasks.List()
+	if len(tasks) == 0 || m.selected >= len(tasks) {
+		b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("No task selected"))
+		return m.renderPanel("Prompt", b.String(), width, height, false)
+	}
+
+	t := tasks[m.selected]
+	promptFile := t.PromptFile
+
+	if promptFile == "" {
+		// Legacy task with inline prompt
+		if t.Prompt != "" {
+			b.WriteString(t.Prompt)
+		} else {
+			b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("No prompt file"))
+		}
+		return m.renderPanel("Prompt", b.String(), width, height, false)
+	}
+
+	// Read the prompt file
+	content, err := os.ReadFile(promptFile)
+	if err != nil {
+		b.WriteString(lipgloss.NewStyle().Foreground(colorError).Render(fmt.Sprintf("Error reading prompt: %v", err)))
+		return m.renderPanel("Prompt", b.String(), width, height, false)
+	}
+
+	// Calculate available lines for content (account for panel padding/borders)
+	availableLines := height - 4 // 2 for borders, 2 for padding
+	if availableLines < 1 {
+		availableLines = 1
+	}
+
+	// Split content into lines and truncate if needed
+	lines := strings.Split(string(content), "\n")
+	if len(lines) > availableLines {
+		lines = lines[:availableLines-1]
+		lines = append(lines, lipgloss.NewStyle().Foreground(colorSecondary).Render("... (truncated)"))
+	}
+
+	// Truncate long lines to fit panel width
+	contentWidth := width - 8 // Account for borders and padding
+	for i, line := range lines {
+		if len(line) > contentWidth {
+			lines[i] = line[:contentWidth-3] + "..."
+		}
+	}
+
+	b.WriteString(strings.Join(lines, "\n"))
+
+	return m.renderPanel("Prompt", b.String(), width, height, false)
 }
 
 // centerContent centers the content both horizontally and vertically
