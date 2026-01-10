@@ -98,6 +98,12 @@ type editFinishedMsg struct {
 	err error
 }
 
+// fzfFinishedMsg is sent when fzf directory selection completes
+type fzfFinishedMsg struct {
+	dir string
+	err error
+}
+
 // NewModel creates a new TUI model
 func NewModel(tasks *task.Manager, zj *zellij.Controller, cfg *config.Config, statusChan chan StatusUpdate) Model {
 	// Name input
@@ -279,6 +285,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mode = viewDashboard
 		return m, nil
 
+	case fzfFinishedMsg:
+		// fzf directory selection completed
+		if msg.err != nil {
+			m.addMessage(fmt.Sprintf("fzf error: %v", msg.err), true)
+		} else if msg.dir != "" {
+			m.cwdInput.SetValue(msg.dir)
+		}
+		return m, nil
+
 	case tea.KeyMsg:
 		switch m.mode {
 		case viewDashboard:
@@ -426,6 +441,10 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 		return m, textinput.Blink
+
+	case "ctrl+f":
+		// Open fzf to select a directory
+		return m, m.openFzfDirSelector()
 
 	case "enter":
 		// Open editor if name is filled
@@ -593,6 +612,10 @@ func (m Model) updateEditTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		return m, textinput.Blink
 
+	case "ctrl+f":
+		// Open fzf to select a directory
+		return m, m.openFzfDirSelector()
+
 	case "enter":
 		// Update task if name is filled
 		name := strings.TrimSpace(m.nameInput.Value())
@@ -660,10 +683,56 @@ func (m Model) openEditorForEdit(promptFile string) tea.Cmd {
 	})
 }
 
+// openFzfDirSelector opens fzf to select a directory
+func (m Model) openFzfDirSelector() tea.Cmd {
+	// Use fd if available, otherwise fall back to find
+	// fd: fd --type d
+	// find: find . -type d
+	var listCmd string
+	if _, err := exec.LookPath("fd"); err == nil {
+		listCmd = "fd --type d --hidden --exclude .git"
+	} else {
+		listCmd = "find . -type d -name '.git' -prune -o -type d -print"
+	}
+
+	// Create a temp file to capture output
+	tmpFile, err := os.CreateTemp("", "flock-fzf-*.txt")
+	if err != nil {
+		return func() tea.Msg {
+			return fzfFinishedMsg{dir: "", err: err}
+		}
+	}
+	tmpPath := tmpFile.Name()
+	tmpFile.Close()
+
+	// Pipe to fzf and write output to temp file
+	c := exec.Command("bash", "-c", listCmd+" | fzf --prompt='Select directory: ' > "+tmpPath)
+	return tea.ExecProcess(c, func(err error) tea.Msg {
+		defer os.Remove(tmpPath)
+
+		if err != nil {
+			// fzf returns exit code 130 when cancelled (Ctrl+C or Esc)
+			if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 130 {
+				return fzfFinishedMsg{dir: "", err: nil}
+			}
+			return fzfFinishedMsg{dir: "", err: err}
+		}
+
+		// Read selected directory from temp file
+		content, readErr := os.ReadFile(tmpPath)
+		if readErr != nil {
+			return fzfFinishedMsg{dir: "", err: readErr}
+		}
+
+		dir := strings.TrimSpace(string(content))
+		return fzfFinishedMsg{dir: dir, err: nil}
+	})
+}
+
 // updateConfirmDelete handles delete confirmation input
 func (m Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "y", "Y":
+	case "y", "Y", "enter":
 		// Confirm deletion
 		m.deleteTask(m.deletingTaskID)
 		m.deletingTaskID = ""
@@ -841,7 +910,7 @@ func (m Model) viewNewTask() string {
 	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("Press Enter to open editor for task prompt..."))
 	b.WriteString("\n\n")
 
-	help := helpStyle.Render("[tab]next field  [enter]open editor  [esc]cancel")
+	help := helpStyle.Render("[tab]next field  [ctrl+f]fzf dir  [enter]open editor  [esc]cancel")
 	b.WriteString(help)
 
 	return m.centerContent(modalStyle.Render(b.String()))
@@ -869,7 +938,7 @@ func (m Model) viewEditTask() string {
 	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("Press Enter to edit task prompt in editor..."))
 	b.WriteString("\n\n")
 
-	help := helpStyle.Render("[tab]next field  [enter]open editor  [esc]cancel")
+	help := helpStyle.Render("[tab]next field  [ctrl+f]fzf dir  [enter]open editor  [esc]cancel")
 	b.WriteString(help)
 
 	return m.centerContent(modalStyle.Render(b.String()))
@@ -901,7 +970,7 @@ func (m Model) viewConfirmDelete() string {
 	}
 
 	b.WriteString("\n")
-	help := helpStyle.Render("[y]es  [n]o  [esc]cancel")
+	help := helpStyle.Render("[y/enter]yes  [n]o  [esc]cancel")
 	b.WriteString(help)
 
 	return m.centerContent(modalStyle.Render(b.String()))
