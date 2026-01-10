@@ -390,6 +390,30 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // openEditor returns a command that opens the editor and sends editorFinishedMsg when done
 func (m Model) openEditor(taskName, promptFile, cwd string) tea.Cmd {
 	editor := getEditor()
+
+	// For GUI editors, start the process without blocking and return immediately
+	if isGUIEditor(editor) {
+		return func() tea.Msg {
+			c := exec.Command(editor, promptFile)
+			if err := c.Start(); err != nil {
+				return editorFinishedMsg{
+					taskName:   taskName,
+					promptFile: promptFile,
+					cwd:        cwd,
+					err:        err,
+				}
+			}
+			// Don't wait for GUI editor to close - return success immediately
+			return editorFinishedMsg{
+				taskName:   taskName,
+				promptFile: promptFile,
+				cwd:        cwd,
+				err:        nil,
+			}
+		}
+	}
+
+	// For terminal editors, block until the editor closes
 	c := exec.Command(editor, promptFile)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		return editorFinishedMsg{
@@ -410,6 +434,41 @@ func getEditor() string {
 		return editor
 	}
 	return "vi"
+}
+
+// isGUIEditor returns true if the editor is a GUI application that detaches from the terminal
+func isGUIEditor(editor string) bool {
+	// Get just the binary name (handles paths like /usr/bin/code)
+	base := filepath.Base(editor)
+	// Handle cases like "code -w" by taking just the first part
+	if idx := strings.Index(base, " "); idx != -1 {
+		base = base[:idx]
+	}
+
+	guiEditors := []string{
+		"code",          // VS Code
+		"code-insiders", // VS Code Insiders
+		"cursor",        // Cursor editor
+		"subl",          // Sublime Text
+		"sublime",       // Sublime Text
+		"atom",          // Atom
+		"gedit",         // GNOME editor
+		"kate",          // KDE editor
+		"gvim",          // GUI Vim
+		"mvim",          // MacVim
+		"idea",          // IntelliJ IDEA
+		"goland",        // GoLand
+		"pycharm",       // PyCharm
+		"webstorm",      // WebStorm
+		"zed",           // Zed editor
+	}
+
+	for _, gui := range guiEditors {
+		if base == gui {
+			return true
+		}
+	}
+	return false
 }
 
 // updateEditTask handles edit task form input
@@ -498,6 +557,20 @@ func (m Model) updateEditTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // openEditorForEdit opens the editor for an existing prompt file
 func (m Model) openEditorForEdit(promptFile string) tea.Cmd {
 	editor := getEditor()
+
+	// For GUI editors, start the process without blocking and return immediately
+	if isGUIEditor(editor) {
+		return func() tea.Msg {
+			c := exec.Command(editor, promptFile)
+			if err := c.Start(); err != nil {
+				return editFinishedMsg{err: err}
+			}
+			// Don't wait for GUI editor to close
+			return editFinishedMsg{err: nil}
+		}
+	}
+
+	// For terminal editors, block until the editor closes
 	c := exec.Command(editor, promptFile)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		return editFinishedMsg{err: err}
@@ -559,40 +632,60 @@ func (m Model) View() string {
 
 // viewDashboard renders the main dashboard
 func (m Model) viewDashboard() string {
-	// Calculate responsive dimensions
-	availableWidth := m.width - 4 // Account for centering padding
+	// Use actual terminal dimensions
+	availableWidth := m.width
+	availableHeight := m.height
 
-	// Minimum width
-	if availableWidth < 60 {
-		availableWidth = 60
+	// Fallback for very small terminals
+	if availableWidth < 60 || availableHeight < 15 {
+		return "Terminal too small. Please resize."
 	}
 
-	// Calculate task panel height based on actual content
-	// Header (1) + tasks + stats (2) + padding (2) + border (2) = 7 + num tasks
-	numTasks := m.tasks.Count()
-	if numTasks == 0 {
-		numTasks = 1 // "No tasks" message
-	}
-	tasksHeight := numTasks + 7
-	if tasksHeight > 15 {
-		tasksHeight = 15 // Cap at reasonable height
+	// Height allocation:
+	// - Help bar: 1 line
+	// - Status panel: fixed content height + borders
+	// - Top row: remaining space
+	helpBarHeight := 1
+	statusContentHeight := 5                           // Content lines for status messages
+	statusPanelHeight := statusContentHeight + 2       // +2 for borders
+	topRowHeight := availableHeight - statusPanelHeight - helpBarHeight
+
+	// Ensure minimum heights
+	if topRowHeight < 10 {
+		topRowHeight = 10
 	}
 
-	// Fixed compact heights for other panels
-	promptHeight := 6
-	messagesHeight := 5
+	// Width allocation for columns
+	// Left panel (tasks): 2/3 of width
+	// Right panel (prompt): 1/3 of width
+	leftWidth := availableWidth * 2 / 3
+	rightWidth := availableWidth - leftWidth
+
+	// Ensure minimum widths
+	if leftWidth < 40 {
+		leftWidth = 40
+	}
+	if rightWidth < 20 {
+		rightWidth = 20
+	}
 
 	// Render panels
-	tasksPanel := m.renderTasksPanel(availableWidth-4, tasksHeight)
-	promptPanel := m.renderPromptPanel(availableWidth-4, promptHeight)
-	messagesPanel := m.renderMessagesPanel(availableWidth-4, messagesHeight)
+	// Width passed is total panel width (renderPanel handles borders internally)
+	tasksPanel := m.renderTasksPanel(leftWidth, topRowHeight)
+	promptPanel := m.renderPromptPanel(rightWidth, topRowHeight)
+	statusPanel := m.renderStatusPanel(availableWidth, statusPanelHeight)
 
-	// Help bar
-	helpBar := helpStyle.Render("[n]ew  [e]dit  [s]tart  [j/k]navigate  [enter]jump  [d]elete  [q]uit")
+	// Help bar - truncate if needed
+	helpText := "[n]ew  [e]dit  [s]tart  [j/k]navigate  [enter]jump  [d]elete  [q]uit"
+	if len(helpText) > availableWidth-2 {
+		helpText = "[n]ew [e]dit [s]tart [j/k]nav [enter]jump [d]el [q]uit"
+	}
+	helpBar := helpStyle.Render(helpText)
 
-	// Compose layout
-	content := lipgloss.JoinVertical(lipgloss.Left, tasksPanel, promptPanel, messagesPanel, helpBar)
-	return m.centerContent(content)
+	// Compose layout: top row (tasks | prompt), then status, then help
+	topRow := lipgloss.JoinHorizontal(lipgloss.Top, tasksPanel, promptPanel)
+	content := lipgloss.JoinVertical(lipgloss.Left, topRow, statusPanel, helpBar)
+	return content
 }
 
 // viewNewTask renders the new task form
@@ -705,11 +798,23 @@ func (m Model) renderPanel(title, content string, width, height int, active bool
 		titleStyleToUse = panelTitleStyle
 	}
 
-	// Configure box dimensions and padding
+	// Configure box dimensions
+	// Width: total panel width minus borders (2)
+	// Height: total panel height minus borders (2) minus padding (2 top + 2 bottom = 4)
+	// Lipgloss Width/Height set the content area size
+	contentWidth := width - 2   // Subtract border width
+	contentHeight := height - 4 // Subtract border (2) + padding (2)
+	if contentWidth < 10 {
+		contentWidth = 10
+	}
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+
 	boxStyle = boxStyle.
-		Width(width).
-		Height(height).
-		Padding(1, 2)
+		Width(contentWidth).
+		Height(contentHeight).
+		Padding(1, 2) // Vertical and horizontal padding
 
 	// Render title with styling
 	styledTitle := titleStyleToUse.Render(title)
@@ -759,16 +864,64 @@ func (m Model) renderTasksPanel(width, height int) string {
 	var b strings.Builder
 
 	tasks := m.tasks.List()
+
+	// Calculate content width (subtract borders 2 + horizontal padding 4 = 6)
+	contentWidth := width - 6
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+
+	// Calculate dynamic column widths based on available content width
+	// Fixed columns: ID (4), Status (12 with spinner), Age (6) = 22 fixed
+	// Variable columns: Name, Directory share remaining space
+	fixedWidth := 4 + 12 + 6 + 3 // +3 for spacing between columns
+	variableWidth := contentWidth - fixedWidth
+	if variableWidth < 20 {
+		variableWidth = 20
+	}
+	nameWidth := variableWidth * 3 / 5
+	dirWidth := variableWidth - nameWidth
+
 	if len(tasks) == 0 {
 		b.WriteString("No tasks yet. Press 'n' to create one.\n")
 	} else {
-		// Header
-		header := fmt.Sprintf("%-4s %-25s %-10s %-20s %-6s", "#", "Task", "Status", "Directory", "Age")
+		// Header with dynamic widths
+		headerFmt := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%-%ds %%-%ds", 4, nameWidth, 12, dirWidth, 6)
+		header := fmt.Sprintf(headerFmt, "#", "Task", "Status", "Directory", "Age")
 		b.WriteString(tableHeaderStyle.Render(header))
 		b.WriteString("\n")
 
+		// Calculate available lines for task rows
+		// height - 4 (borders + padding) - 1 (header) - 2 (stats + spacing)
+		availableLines := height - 7
+		if availableLines < 3 {
+			availableLines = 3
+		}
+
+		// Determine visible range for scrolling
+		startIdx := 0
+		endIdx := len(tasks)
+		if len(tasks) > availableLines {
+			// Center the selected item in the visible range
+			halfVisible := availableLines / 2
+			startIdx = m.selected - halfVisible
+			if startIdx < 0 {
+				startIdx = 0
+			}
+			endIdx = startIdx + availableLines
+			if endIdx > len(tasks) {
+				endIdx = len(tasks)
+				startIdx = endIdx - availableLines
+				if startIdx < 0 {
+					startIdx = 0
+				}
+			}
+		}
+
 		// Rows
-		for i, t := range tasks {
+		rowFmt := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%-%ds %%-%ds", 4, nameWidth, 12, dirWidth, 6)
+		for i := startIdx; i < endIdx; i++ {
+			t := tasks[i]
 			// Show spinner next to WORKING status
 			var statusDisplay string
 			if t.Status == task.StatusWorking {
@@ -785,11 +938,11 @@ func (m Model) renderTasksPanel(width, height int) string {
 				dir = filepath.Base(dir)
 			}
 
-			row := fmt.Sprintf("%-4s %-25s %-10s %-20s %-6s",
+			row := fmt.Sprintf(rowFmt,
 				t.ID,
-				truncate(t.Name, 25),
+				truncate(t.Name, nameWidth),
 				statusDisplay,
-				truncate(dir, 20),
+				truncate(dir, dirWidth),
 				t.AgeString(),
 			)
 
@@ -799,10 +952,16 @@ func (m Model) renderTasksPanel(width, height int) string {
 			b.WriteString(row)
 			b.WriteString("\n")
 		}
+
+		// Show scroll indicator if needed
+		if len(tasks) > availableLines {
+			scrollInfo := fmt.Sprintf("(%d-%d of %d)", startIdx+1, endIdx, len(tasks))
+			b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render(scrollInfo))
+			b.WriteString("\n")
+		}
 	}
 
 	// Stats
-	b.WriteString("\n")
 	stats := fmt.Sprintf("Tasks: %d | Active: %d | Waiting: %d",
 		m.tasks.Count(),
 		m.tasks.ActiveCount(),
@@ -813,39 +972,75 @@ func (m Model) renderTasksPanel(width, height int) string {
 	return m.renderPanel("Tasks", b.String(), width, height, true)
 }
 
-// renderMessagesPanel renders the messages panel
-func (m Model) renderMessagesPanel(width, height int) string {
+// renderStatusPanel renders the status panel
+func (m Model) renderStatusPanel(width, height int) string {
 	var b strings.Builder
 
+	// Calculate content dimensions (borders 2 + horizontal padding 4 = 6)
+	contentWidth := width - 6
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+	// Available lines = panel height - borders (2) - vertical padding (2)
+	availableLines := height - 4
+	if availableLines < 1 {
+		availableLines = 1
+	}
+
 	if len(m.messages) == 0 && m.err == nil {
-		b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("No recent messages"))
+		b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("No recent status updates"))
 	} else {
+		lineCount := 0
 		// Show error if present
-		if m.err != nil {
-			errLine := lipgloss.NewStyle().Foreground(colorError).Render(fmt.Sprintf("Error: %v", m.err))
+		if m.err != nil && lineCount < availableLines {
+			errText := fmt.Sprintf("Error: %v", m.err)
+			if len(errText) > contentWidth {
+				errText = errText[:contentWidth-3] + "..."
+			}
+			errLine := lipgloss.NewStyle().Foreground(colorError).Render(errText)
 			b.WriteString(errLine)
 			b.WriteString("\n")
+			lineCount++
 		}
-		// Show recent messages
+		// Show recent messages (limit to available lines)
 		for _, msg := range m.messages {
+			if lineCount >= availableLines {
+				break
+			}
 			timestamp := msg.Timestamp.Format("15:04:05")
+			msgText := fmt.Sprintf("[%s] %s", timestamp, msg.Text)
+			if len(msgText) > contentWidth {
+				msgText = msgText[:contentWidth-3] + "..."
+			}
 			var line string
 			if msg.IsError {
-				line = lipgloss.NewStyle().Foreground(colorError).Render(fmt.Sprintf("[%s] %s", timestamp, msg.Text))
+				line = lipgloss.NewStyle().Foreground(colorError).Render(msgText)
 			} else {
-				line = lipgloss.NewStyle().Foreground(colorSecondary).Render(fmt.Sprintf("[%s] %s", timestamp, msg.Text))
+				line = lipgloss.NewStyle().Foreground(colorSecondary).Render(msgText)
 			}
 			b.WriteString(line)
 			b.WriteString("\n")
+			lineCount++
 		}
 	}
 
-	return m.renderPanel("Messages", b.String(), width, height, false)
+	return m.renderPanel("Status", b.String(), width, height, false)
 }
 
 // renderPromptPanel renders the prompt panel showing the selected task's .md file content
 func (m Model) renderPromptPanel(width, height int) string {
 	var b strings.Builder
+
+	// Calculate content dimensions (borders 2 + horizontal padding 4 = 6)
+	contentWidth := width - 6
+	if contentWidth < 10 {
+		contentWidth = 10
+	}
+	// Available lines = panel height - borders (2) - vertical padding (2)
+	availableLines := height - 4
+	if availableLines < 1 {
+		availableLines = 1
+	}
 
 	tasks := m.tasks.List()
 	if len(tasks) == 0 || m.selected >= len(tasks) {
@@ -859,7 +1054,18 @@ func (m Model) renderPromptPanel(width, height int) string {
 	if promptFile == "" {
 		// Legacy task with inline prompt
 		if t.Prompt != "" {
-			b.WriteString(t.Prompt)
+			// Wrap legacy prompt to fit content width
+			lines := strings.Split(t.Prompt, "\n")
+			for i, line := range lines {
+				if len(line) > contentWidth {
+					lines[i] = line[:contentWidth-3] + "..."
+				}
+			}
+			if len(lines) > availableLines {
+				lines = lines[:availableLines-1]
+				lines = append(lines, lipgloss.NewStyle().Foreground(colorSecondary).Render("... (truncated)"))
+			}
+			b.WriteString(strings.Join(lines, "\n"))
 		} else {
 			b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("No prompt file"))
 		}
@@ -873,12 +1079,6 @@ func (m Model) renderPromptPanel(width, height int) string {
 		return m.renderPanel("Prompt", b.String(), width, height, false)
 	}
 
-	// Calculate available lines for content (account for panel padding/borders)
-	availableLines := height - 4 // 2 for borders, 2 for padding
-	if availableLines < 1 {
-		availableLines = 1
-	}
-
 	// Split content into lines and truncate if needed
 	lines := strings.Split(string(content), "\n")
 	if len(lines) > availableLines {
@@ -886,8 +1086,7 @@ func (m Model) renderPromptPanel(width, height int) string {
 		lines = append(lines, lipgloss.NewStyle().Foreground(colorSecondary).Render("... (truncated)"))
 	}
 
-	// Truncate long lines to fit panel width
-	contentWidth := width - 8 // Account for borders and padding
+	// Truncate long lines to fit content width
 	for i, line := range lines {
 		if len(line) > contentWidth {
 			lines[i] = line[:contentWidth-3] + "..."
