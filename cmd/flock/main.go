@@ -71,7 +71,7 @@ func main() {
 	statusChan := make(chan tui.StatusUpdate, 100)
 
 	// Start status watcher
-	watcher := status.NewWatcher(statusDir, statusChan)
+	watcher := status.NewWatcher(statusDir, statusChan, cfg)
 	if err := watcher.Start(); err != nil {
 		log.Fatalf("failed to start status watcher: %v", err)
 	}

@@ -16,8 +16,11 @@ const (
 
 // Config holds flock configuration
 type Config struct {
-	PromptsDir   string `json:"prompts_dir"`
-	TemplatesDir string `json:"templates_dir"`
+	PromptsDir           string `json:"prompts_dir"`
+	TemplatesDir         string `json:"templates_dir"`
+	NotificationsEnabled bool   `json:"notifications_enabled"`
+	AutoStartTasks       bool   `json:"auto_start_tasks"`
+	ConfirmBeforeDelete  bool   `json:"confirm_before_delete"`
 
 	// Internal paths (not saved to config file)
 	configDir string
@@ -37,9 +40,12 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		PromptsDir:   filepath.Join(configDir, promptsDir),
-		TemplatesDir: filepath.Join(configDir, templatesDir),
-		configDir:    configDir,
+		PromptsDir:           filepath.Join(configDir, promptsDir),
+		TemplatesDir:         filepath.Join(configDir, templatesDir),
+		NotificationsEnabled: true,  // enabled by default
+		AutoStartTasks:       false, // disabled by default
+		ConfirmBeforeDelete:  true,  // enabled by default
+		configDir:            configDir,
 	}
 
 	// Try to load existing config

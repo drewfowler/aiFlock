@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dfowler/flock/internal/config"
 	"github.com/dfowler/flock/internal/task"
 	"github.com/dfowler/flock/internal/tui"
 	"github.com/fsnotify/fsnotify"
@@ -15,20 +16,22 @@ import (
 
 // Watcher watches the status directory for changes
 type Watcher struct {
-	dir           string
-	updates       chan tui.StatusUpdate
-	done          chan struct{}
-	lastStatus    map[string]string // tracks last known status per task
-	initializing  bool              // true during initial file load (skip notifications)
+	dir          string
+	updates      chan tui.StatusUpdate
+	done         chan struct{}
+	lastStatus   map[string]string // tracks last known status per task
+	initializing bool              // true during initial file load (skip notifications)
+	config       *config.Config
 }
 
 // NewWatcher creates a new status watcher
-func NewWatcher(dir string, updates chan tui.StatusUpdate) *Watcher {
+func NewWatcher(dir string, updates chan tui.StatusUpdate, cfg *config.Config) *Watcher {
 	return &Watcher{
 		dir:        dir,
 		updates:    updates,
 		done:       make(chan struct{}),
 		lastStatus: make(map[string]string),
+		config:     cfg,
 	}
 }
 
@@ -121,6 +124,11 @@ func (w *Watcher) handleFile(path string) {
 
 // sendNotification sends a desktop notification for status changes
 func (w *Watcher) sendNotification(taskID, taskName, status string) {
+	// Check if notifications are enabled
+	if w.config != nil && !w.config.NotificationsEnabled {
+		return
+	}
+
 	var title, body, urgency string
 
 	// Use task name if available, otherwise fall back to task ID

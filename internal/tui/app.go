@@ -11,11 +11,13 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/dfowler/flock/internal/config"
 	"github.com/dfowler/flock/internal/prompt"
 	"github.com/dfowler/flock/internal/task"
 	"github.com/dfowler/flock/internal/zellij"
+	"golang.org/x/term"
 )
 
 // View modes
@@ -26,6 +28,7 @@ const (
 	viewNewTask
 	viewEditTask
 	viewConfirmDelete
+	viewSettings
 )
 
 // Message represents a status message to display in the TUI
@@ -59,11 +62,18 @@ type Model struct {
 	// Delete confirmation tracking
 	deletingTaskID string
 
+	// Settings popup tracking
+	settingsSelected int
+
 	// Spinner for working status
 	spinner spinner.Model
 
 	// Status messages for the messages panel
 	messages []Message
+
+	// Glamour renderer for markdown (cached to avoid recreation on every render)
+	glamourRenderer     *glamour.TermRenderer
+	glamourRendererWidth int
 }
 
 // StatusUpdate represents a status change from the watcher
@@ -105,20 +115,45 @@ func NewModel(tasks *task.Manager, zj *zellij.Controller, cfg *config.Config, st
 	// Spinner for working status
 	s := spinner.New()
 	s.Spinner = spinner.Spinner{
-		Frames: []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"},
+		Frames: []string{"⡇", "⠏", "⠛", "⠹", "⢸", "⣰", "⣤", "⣆"},
 		FPS:    time.Millisecond * 100,
 	}
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("39")) // blue
 
+	// Get initial terminal size
+	width, height, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil {
+		width, height = 80, 24 // fallback defaults
+	}
+
+	// Initialize glamour renderer
+	// Right panel is 1/2 of width, content width subtracts borders (2) + padding (4)
+	rightWidth := width - (width / 2)
+	if rightWidth < 30 {
+		rightWidth = 30
+	}
+	promptContentWidth := rightWidth - 6
+	if promptContentWidth < 10 {
+		promptContentWidth = 10
+	}
+	glamourRenderer, _ := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(promptContentWidth),
+	)
+
 	return Model{
-		tasks:         tasks,
-		zellij:        zj,
-		config:        cfg,
-		promptMgr:     prompt.NewManager(cfg),
-		statusUpdates: statusChan,
-		nameInput:     nameInput,
-		cwdInput:      cwdInput,
-		spinner:       s,
+		tasks:                tasks,
+		zellij:               zj,
+		config:               cfg,
+		promptMgr:            prompt.NewManager(cfg),
+		statusUpdates:        statusChan,
+		nameInput:            nameInput,
+		cwdInput:             cwdInput,
+		spinner:              s,
+		width:                width,
+		height:               height,
+		glamourRenderer:      glamourRenderer,
+		glamourRendererWidth: promptContentWidth,
 	}
 }
 
@@ -159,6 +194,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Calculate prompt panel content width and update glamour renderer if needed
+		// Right panel is 1/2 of width, content width subtracts borders (2) + padding (4)
+		rightWidth := msg.Width - (msg.Width / 2)
+		if rightWidth < 30 {
+			rightWidth = 30
+		}
+		promptContentWidth := rightWidth - 6
+		if promptContentWidth < 10 {
+			promptContentWidth = 10
+		}
+		if m.glamourRendererWidth != promptContentWidth {
+			if renderer, err := glamour.NewTermRenderer(
+				glamour.WithAutoStyle(),
+				glamour.WithWordWrap(promptContentWidth),
+			); err == nil {
+				m.glamourRenderer = renderer
+				m.glamourRendererWidth = promptContentWidth
+			}
+		}
 
 	case spinner.TickMsg:
 		var cmd tea.Cmd
@@ -172,7 +226,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := m.tasks.UpdateStatus(msg.TaskID, msg.Status); err != nil {
 				m.err = err
 				m.addMessage(fmt.Sprintf("Error updating %s: %v", t.Name, err), true)
-			} else if oldStatus != msg.Status {
+			} else if oldStatus != msg.Status && m.config.NotificationsEnabled {
 				m.addMessage(fmt.Sprintf("%s → %s", t.Name, msg.Status), false)
 			}
 		}
@@ -186,12 +240,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addMessage(fmt.Sprintf("Editor error: %v", msg.err), true)
 		} else {
 			// Create the task with the prompt file
-			if _, err := m.tasks.Create(msg.taskName, msg.promptFile, msg.cwd); err != nil {
+			t, err := m.tasks.Create(msg.taskName, msg.promptFile, msg.cwd)
+			if err != nil {
 				m.err = err
 				m.addMessage(fmt.Sprintf("Failed to create task: %v", err), true)
 			} else {
 				m.addMessage(fmt.Sprintf("Created task: %s", msg.taskName), false)
 				m.selected = m.tasks.Count() - 1
+
+				// Auto-start if enabled
+				if m.config.AutoStartTasks {
+					cwd := t.Cwd
+					if cwd == "" {
+						cwd = "."
+					}
+					promptOrFile := t.GetPromptOrFile()
+					isFile := t.PromptFile != ""
+					if err := m.zellij.NewTab(t.ID, t.Name, t.TabName, promptOrFile, cwd, isFile); err != nil {
+						m.err = err
+						m.addMessage(fmt.Sprintf("Failed to auto-start: %v", err), true)
+					} else {
+						m.tasks.UpdateStatus(t.ID, task.StatusWorking)
+					}
+				}
 			}
 		}
 		m.mode = viewDashboard
@@ -218,6 +289,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateEditTask(msg)
 		case viewConfirmDelete:
 			return m.updateConfirmDelete(msg)
+		case viewSettings:
+			return m.updateSettings(msg)
 		}
 	}
 
@@ -295,12 +368,22 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 
 	case "d":
-		// Show delete confirmation
+		// Delete task (with or without confirmation based on settings)
 		if len(tasks) > 0 && m.selected < len(tasks) {
 			t := tasks[m.selected]
-			m.deletingTaskID = t.ID
-			m.mode = viewConfirmDelete
+			if m.config.ConfirmBeforeDelete {
+				m.deletingTaskID = t.ID
+				m.mode = viewConfirmDelete
+			} else {
+				// Delete immediately without confirmation
+				m.deleteTask(t.ID)
+			}
 		}
+
+	case "S":
+		// Open settings popup
+		m.mode = viewSettings
+		m.settingsSelected = 0
 	}
 
 	return m, nil
@@ -582,25 +665,7 @@ func (m Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
 		// Confirm deletion
-		if t, ok := m.tasks.Get(m.deletingTaskID); ok {
-			// Close the zellij tab if task was started
-			if t.Status != task.StatusPending && t.TabName != "" {
-				if err := m.zellij.CloseTab(t.TabName); err != nil {
-					m.err = err
-				}
-				m.zellij.GoToController()
-			}
-			// Delete the status file to prevent stale updates
-			m.zellij.DeleteStatusFile(m.deletingTaskID)
-			// Delete the prompt file
-			m.promptMgr.DeletePromptFile(m.deletingTaskID)
-			if err := m.tasks.Delete(m.deletingTaskID); err != nil {
-				m.err = err
-			}
-			if m.selected >= len(m.tasks.List()) && m.selected > 0 {
-				m.selected--
-			}
-		}
+		m.deleteTask(m.deletingTaskID)
 		m.deletingTaskID = ""
 		m.mode = viewDashboard
 
@@ -616,6 +681,69 @@ func (m Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateSettings handles settings popup input
+func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	settingsCount := 3
+
+	switch msg.String() {
+	case "ctrl+c":
+		return m, tea.Quit
+
+	case "esc", "S":
+		m.mode = viewDashboard
+		return m, nil
+
+	case "j", "down":
+		if m.settingsSelected < settingsCount-1 {
+			m.settingsSelected++
+		}
+
+	case "k", "up":
+		if m.settingsSelected > 0 {
+			m.settingsSelected--
+		}
+
+	case "enter", " ":
+		// Toggle the selected setting
+		switch m.settingsSelected {
+		case 0:
+			m.config.NotificationsEnabled = !m.config.NotificationsEnabled
+		case 1:
+			m.config.AutoStartTasks = !m.config.AutoStartTasks
+		case 2:
+			m.config.ConfirmBeforeDelete = !m.config.ConfirmBeforeDelete
+		}
+		if err := m.config.Save(); err != nil {
+			m.addMessage(fmt.Sprintf("Failed to save settings: %v", err), true)
+		}
+	}
+
+	return m, nil
+}
+
+// deleteTask handles the actual deletion of a task
+func (m *Model) deleteTask(taskID string) {
+	if t, ok := m.tasks.Get(taskID); ok {
+		// Close the zellij tab if task was started
+		if t.Status != task.StatusPending && t.TabName != "" {
+			if err := m.zellij.CloseTab(t.TabName); err != nil {
+				m.err = err
+			}
+			m.zellij.GoToController()
+		}
+		// Delete the status file to prevent stale updates
+		m.zellij.DeleteStatusFile(taskID)
+		// Delete the prompt file
+		m.promptMgr.DeletePromptFile(taskID)
+		if err := m.tasks.Delete(taskID); err != nil {
+			m.err = err
+		}
+		if m.selected >= len(m.tasks.List()) && m.selected > 0 {
+			m.selected--
+		}
+	}
+}
+
 // View renders the UI
 func (m Model) View() string {
 	switch m.mode {
@@ -625,6 +753,8 @@ func (m Model) View() string {
 		return m.viewEditTask()
 	case viewConfirmDelete:
 		return m.viewConfirmDelete()
+	case viewSettings:
+		return m.viewSettings()
 	default:
 		return m.viewDashboard()
 	}
@@ -636,8 +766,11 @@ func (m Model) viewDashboard() string {
 	availableWidth := m.width
 	availableHeight := m.height
 
-	// Fallback for very small terminals
+	// Fallback for very small terminals or before first WindowSizeMsg
 	if availableWidth < 60 || availableHeight < 15 {
+		if availableWidth == 0 || availableHeight == 0 {
+			return "Loading..."
+		}
 		return "Terminal too small. Please resize."
 	}
 
@@ -655,18 +788,16 @@ func (m Model) viewDashboard() string {
 		topRowHeight = 10
 	}
 
-	// Width allocation for columns
-	// Left panel (tasks): 2/3 of width
-	// Right panel (prompt): 1/3 of width
-	leftWidth := availableWidth * 2 / 3
+	// Width allocation for columns - split equally
+	leftWidth := availableWidth / 2
 	rightWidth := availableWidth - leftWidth
 
 	// Ensure minimum widths
-	if leftWidth < 40 {
-		leftWidth = 40
+	if leftWidth < 30 {
+		leftWidth = 30
 	}
-	if rightWidth < 20 {
-		rightWidth = 20
+	if rightWidth < 30 {
+		rightWidth = 30
 	}
 
 	// Render panels
@@ -676,9 +807,9 @@ func (m Model) viewDashboard() string {
 	statusPanel := m.renderStatusPanel(availableWidth, statusPanelHeight)
 
 	// Help bar - truncate if needed
-	helpText := "[n]ew  [e]dit  [s]tart  [j/k]navigate  [enter]jump  [d]elete  [q]uit"
+	helpText := "[n]ew  [e]dit  [s]tart  [S]ettings  [j/k]navigate  [enter]jump  [d]elete  [q]uit"
 	if len(helpText) > availableWidth-2 {
-		helpText = "[n]ew [e]dit [s]tart [j/k]nav [enter]jump [d]el [q]uit"
+		helpText = "[n]ew [e]dit [s]tart [S]et [j/k]nav [enter]jump [d]el [q]uit"
 	}
 	helpBar := helpStyle.Render(helpText)
 
@@ -776,12 +907,106 @@ func (m Model) viewConfirmDelete() string {
 	return m.centerContent(modalStyle.Render(b.String()))
 }
 
+// viewSettings renders the settings popup
+func (m Model) viewSettings() string {
+	var b strings.Builder
+
+	title := titleStyle.Render("Settings")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	// Checkbox style helpers
+	checkbox := func(checked bool) string {
+		if checked {
+			return "[x]"
+		}
+		return "[ ]"
+	}
+
+	renderSetting := func(index int, checked bool, label, description string) {
+		settingLabel := fmt.Sprintf("%s %s", checkbox(checked), label)
+		if m.settingsSelected == index {
+			settingLabel = selectedRowStyle.Render(settingLabel)
+		}
+		b.WriteString(settingLabel)
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("    " + description))
+		b.WriteString("\n\n")
+	}
+
+	// Setting 0: Notifications
+	renderSetting(0, m.config.NotificationsEnabled, "Notifications", "Show status updates in the messages panel")
+
+	// Setting 1: Auto-start tasks
+	renderSetting(1, m.config.AutoStartTasks, "Auto-start tasks", "Automatically start tasks when created")
+
+	// Setting 2: Confirm before delete
+	renderSetting(2, m.config.ConfirmBeforeDelete, "Confirm before delete", "Show confirmation dialog when deleting tasks")
+
+	help := helpStyle.Render("[j/k]navigate  [enter/space]toggle  [esc/S]close")
+	b.WriteString(help)
+
+	return m.centerContent(modalStyle.Render(b.String()))
+}
+
 // truncate truncates a string to the given length
 func truncate(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
 	return s[:max-3] + "..."
+}
+
+// wrapText wraps text to fit within the given width, returning wrapped lines
+func wrapText(text string, width int) []string {
+	if width <= 0 {
+		return []string{text}
+	}
+
+	var result []string
+	lines := strings.Split(text, "\n")
+
+	for _, line := range lines {
+		if len(line) <= width {
+			result = append(result, line)
+			continue
+		}
+
+		// Wrap long lines
+		for len(line) > width {
+			// Try to find a space to break at
+			breakPoint := width
+			for i := width; i > 0; i-- {
+				if line[i-1] == ' ' {
+					breakPoint = i
+					break
+				}
+			}
+			// If no space found, break at width
+			if breakPoint == width && line[width-1] != ' ' {
+				// Check if there's a space before width
+				spaceFound := false
+				for i := width - 1; i > width/2; i-- {
+					if line[i] == ' ' {
+						breakPoint = i + 1
+						spaceFound = true
+						break
+					}
+				}
+				if !spaceFound {
+					breakPoint = width
+				}
+			}
+
+			result = append(result, strings.TrimRight(line[:breakPoint], " "))
+			line = strings.TrimLeft(line[breakPoint:], " ")
+		}
+		if len(line) > 0 {
+			result = append(result, line)
+		}
+	}
+
+	return result
 }
 
 // renderPanel renders a panel with title and border
@@ -919,15 +1144,20 @@ func (m Model) renderTasksPanel(width, height int) string {
 		}
 
 		// Rows
-		rowFmt := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%-%ds %%-%ds", 4, nameWidth, 12, dirWidth, 6)
 		for i := startIdx; i < endIdx; i++ {
 			t := tasks[i]
 			// Show spinner next to WORKING status
+			statusWidth := 12
 			var statusDisplay string
 			if t.Status == task.StatusWorking {
 				statusDisplay = m.spinner.View() + " " + StatusStyle(string(t.Status)).Render(string(t.Status))
 			} else {
 				statusDisplay = "  " + StatusStyle(string(t.Status)).Render(string(t.Status))
+			}
+			// Pad status to fixed width based on visual width (ANSI codes don't count)
+			statusVisualWidth := lipgloss.Width(statusDisplay)
+			if statusVisualWidth < statusWidth {
+				statusDisplay = statusDisplay + strings.Repeat(" ", statusWidth-statusVisualWidth)
 			}
 
 			// Show directory (use basename for brevity)
@@ -938,13 +1168,13 @@ func (m Model) renderTasksPanel(width, height int) string {
 				dir = filepath.Base(dir)
 			}
 
-			row := fmt.Sprintf(rowFmt,
-				t.ID,
-				truncate(t.Name, nameWidth),
-				statusDisplay,
-				truncate(dir, dirWidth),
-				t.AgeString(),
-			)
+			// Build row with fixed-width columns using proper padding
+			idCol := fmt.Sprintf("%-4s", t.ID)
+			nameCol := fmt.Sprintf("%-*s", nameWidth, truncate(t.Name, nameWidth))
+			dirCol := fmt.Sprintf("%-*s", dirWidth, truncate(dir, dirWidth))
+			ageCol := fmt.Sprintf("%-6s", t.AgeString())
+
+			row := idCol + " " + nameCol + " " + statusDisplay + " " + dirCol + " " + ageCol
 
 			if i == m.selected {
 				row = selectedRowStyle.Render(row)
@@ -1055,12 +1285,7 @@ func (m Model) renderPromptPanel(width, height int) string {
 		// Legacy task with inline prompt
 		if t.Prompt != "" {
 			// Wrap legacy prompt to fit content width
-			lines := strings.Split(t.Prompt, "\n")
-			for i, line := range lines {
-				if len(line) > contentWidth {
-					lines[i] = line[:contentWidth-3] + "..."
-				}
-			}
+			lines := wrapText(t.Prompt, contentWidth)
 			if len(lines) > availableLines {
 				lines = lines[:availableLines-1]
 				lines = append(lines, lipgloss.NewStyle().Foreground(colorSecondary).Render("... (truncated)"))
@@ -1079,18 +1304,38 @@ func (m Model) renderPromptPanel(width, height int) string {
 		return m.renderPanel("Prompt", b.String(), width, height, false)
 	}
 
-	// Split content into lines and truncate if needed
-	lines := strings.Split(string(content), "\n")
+	// Use cached glamour renderer
+	if m.glamourRenderer == nil {
+		// Fallback to plain text wrapping if glamour fails
+		lines := wrapText(string(content), contentWidth)
+		if len(lines) > availableLines {
+			lines = lines[:availableLines-1]
+			lines = append(lines, lipgloss.NewStyle().Foreground(colorSecondary).Render("... (truncated)"))
+		}
+		b.WriteString(strings.Join(lines, "\n"))
+		return m.renderPanel("Prompt", b.String(), width, height, false)
+	}
+
+	rendered, err := m.glamourRenderer.Render(string(content))
+	if err != nil {
+		// Fallback to plain text wrapping if rendering fails
+		lines := wrapText(string(content), contentWidth)
+		if len(lines) > availableLines {
+			lines = lines[:availableLines-1]
+			lines = append(lines, lipgloss.NewStyle().Foreground(colorSecondary).Render("... (truncated)"))
+		}
+		b.WriteString(strings.Join(lines, "\n"))
+		return m.renderPanel("Prompt", b.String(), width, height, false)
+	}
+
+	// Trim trailing whitespace/newlines from glamour output
+	rendered = strings.TrimRight(rendered, "\n ")
+
+	// Truncate to available lines if needed
+	lines := strings.Split(rendered, "\n")
 	if len(lines) > availableLines {
 		lines = lines[:availableLines-1]
 		lines = append(lines, lipgloss.NewStyle().Foreground(colorSecondary).Render("... (truncated)"))
-	}
-
-	// Truncate long lines to fit content width
-	for i, line := range lines {
-		if len(line) > contentWidth {
-			lines[i] = line[:contentWidth-3] + "..."
-		}
 	}
 
 	b.WriteString(strings.Join(lines, "\n"))
