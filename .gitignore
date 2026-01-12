@@ -1,0 +1,8 @@
+# Binary
+flock
+
+# Worktrees
+.flock-worktrees/
+
+# Testing file
+testing
