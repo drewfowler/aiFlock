@@ -13,6 +13,8 @@ Monitor all your AI coding sessions at a glance, see which ones need attention, 
 3. **Status updates** via Claude Code hooks (PENDING/WORKING/WAITING/DONE)
 4. **Jump to** any session needing attention, then return to dashboard
 
+![](assets/ui-overview.png)
+
 ## Requirements
 
 - Go 1.24+
