@@ -1110,9 +1110,9 @@ func (m Model) viewDashboard() string {
 	statusPanel := m.renderStatusPanel(availableWidth, statusPanelHeight)
 
 	// Help bar - truncate if needed
-	helpText := "[n]ew  [e]dit  [s]tart  [S]ettings  [j/k]navigate  [enter]jump  [d]elete  [q]uit"
+	helpText := "[n]ew  [e]dit  [s]tart  [m]erge  [S]ettings  [j/k]navigate  [enter]jump  [d]elete  [q]uit"
 	if len(helpText) > availableWidth-2 {
-		helpText = "[n]ew [e]dit [s]tart [S]et [j/k]nav [enter]jump [d]el [q]uit"
+		helpText = "[n]ew [e]dit [s]tart [m]erge [S]et [j/k]nav [enter]jump [d]el [q]uit"
 	}
 	helpBar := helpStyle.Render(helpText)
 
