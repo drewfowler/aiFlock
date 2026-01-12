@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/dfowler/flock/internal/config"
+	"github.com/dfowler/flock/internal/git"
 	"github.com/dfowler/flock/internal/prompt"
 	"github.com/dfowler/flock/internal/task"
 	"github.com/dfowler/flock/internal/zellij"
@@ -28,6 +29,7 @@ const (
 	viewNewTask
 	viewEditTask
 	viewConfirmDelete
+	viewConfirmWorktreeDelete
 	viewSettings
 )
 
@@ -44,6 +46,7 @@ type Model struct {
 	zellij        *zellij.Controller
 	config        *config.Config
 	promptMgr     *prompt.Manager
+	gitAssigner   *git.Assigner
 	selected      int
 	mode          viewMode
 	width         int
@@ -73,7 +76,7 @@ type Model struct {
 	messages []Message
 
 	// Glamour renderer for markdown (cached to avoid recreation on every render)
-	glamourRenderer     *glamour.TermRenderer
+	glamourRenderer      *glamour.TermRenderer
 	glamourRendererWidth int
 }
 
@@ -106,7 +109,7 @@ type fzfFinishedMsg struct {
 }
 
 // NewModel creates a new TUI model
-func NewModel(tasks *task.Manager, zj *zellij.Controller, cfg *config.Config, statusChan chan StatusUpdate) Model {
+func NewModel(tasks *task.Manager, zj *zellij.Controller, cfg *config.Config, gitAssigner *git.Assigner, statusChan chan StatusUpdate) Model {
 	// Name input
 	nameInput := textinput.New()
 	nameInput.Placeholder = "Task name"
@@ -159,6 +162,7 @@ func NewModel(tasks *task.Manager, zj *zellij.Controller, cfg *config.Config, st
 		zellij:               zj,
 		config:               cfg,
 		promptMgr:            prompt.NewManager(cfg),
+		gitAssigner:          gitAssigner,
 		statusUpdates:        statusChan,
 		nameInput:            nameInput,
 		cwdInput:             cwdInput,
@@ -253,18 +257,49 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.err
 			m.addMessage(fmt.Sprintf("Editor error: %v", msg.err), true)
 		} else {
-			// Create the task with the prompt file
-			t, err := m.tasks.Create(msg.taskName, msg.promptFile, msg.cwd)
+			// Try to assign a worktree if enabled
+			var createOpts *task.CreateOptions
+			if m.gitAssigner != nil {
+				taskID := m.tasks.NextID()
+				cwd := msg.cwd
+				if cwd == "" {
+					cwd = "."
+				}
+				// Convert to absolute path for worktree assignment
+				if !filepath.IsAbs(cwd) {
+					if absCwd, err := filepath.Abs(cwd); err == nil {
+						cwd = absCwd
+					}
+				}
+				// Get active tasks for worktree assignment
+				activeTasks := m.getTaskWorktreeInfos()
+				if assignment, err := m.gitAssigner.AssignWorktree(taskID, cwd, activeTasks); err != nil {
+					m.addMessage(fmt.Sprintf("Worktree warning: %v", err), true)
+				} else if assignment != nil {
+					createOpts = &task.CreateOptions{
+						WorktreePath: assignment.WorktreePath,
+						GitBranch:    assignment.GitBranch,
+						RepoRoot:     assignment.RepoRoot,
+					}
+				}
+			}
+
+			// Create the task with the prompt file and optional worktree
+			t, err := m.tasks.CreateWithOptions(msg.taskName, msg.promptFile, msg.cwd, createOpts)
 			if err != nil {
 				m.err = err
 				m.addMessage(fmt.Sprintf("Failed to create task: %v", err), true)
 			} else {
-				m.addMessage(fmt.Sprintf("Created task: %s", msg.taskName), false)
+				if t.GitBranch != "" {
+					m.addMessage(fmt.Sprintf("Created task: %s (branch: %s)", msg.taskName, t.GitBranch), false)
+				} else {
+					m.addMessage(fmt.Sprintf("Created task: %s", msg.taskName), false)
+				}
 				m.selected = m.tasks.Count() - 1
 
 				// Auto-start if enabled
 				if m.config.AutoStartTasks {
-					cwd := t.Cwd
+					cwd := t.EffectiveCwd()
 					if cwd == "" {
 						cwd = "."
 					}
@@ -312,6 +347,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateEditTask(msg)
 		case viewConfirmDelete:
 			return m.updateConfirmDelete(msg)
+		case viewConfirmWorktreeDelete:
+			return m.updateConfirmWorktreeDelete(msg)
 		case viewSettings:
 			return m.updateSettings(msg)
 		}
@@ -364,7 +401,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if len(tasks) > 0 && m.selected < len(tasks) {
 			t := tasks[m.selected]
 			if t.Status == task.StatusPending {
-				cwd := t.Cwd
+				cwd := t.EffectiveCwd()
 				if cwd == "" {
 					cwd = "."
 				}
@@ -801,8 +838,18 @@ func (m Model) openFzfDirSelector() tea.Cmd {
 func (m Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y", "enter":
-		// Confirm deletion
-		m.deleteTask(m.deletingTaskID)
+		// Confirm deletion - check if we need to ask about worktree
+		if t, ok := m.tasks.Get(m.deletingTaskID); ok && t.WorktreePath != "" {
+			if m.config.Worktrees.Cleanup == config.WorktreeCleanupAsk {
+				// Show worktree deletion confirmation
+				m.mode = viewConfirmWorktreeDelete
+				return m, nil
+			}
+			// Auto or keep - proceed with appropriate action
+			m.deleteTaskWithWorktreeOption(m.deletingTaskID, m.config.Worktrees.Cleanup == config.WorktreeCleanupDelete)
+		} else {
+			m.deleteTaskWithWorktreeOption(m.deletingTaskID, false)
+		}
 		m.deletingTaskID = ""
 		m.mode = viewDashboard
 
@@ -818,9 +865,36 @@ func (m Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// updateConfirmWorktreeDelete handles worktree deletion confirmation input
+func (m Model) updateConfirmWorktreeDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		// Delete task and worktree
+		m.deleteTaskWithWorktreeOption(m.deletingTaskID, true)
+		m.deletingTaskID = ""
+		m.mode = viewDashboard
+
+	case "n", "N", "enter":
+		// Delete task but keep worktree
+		m.deleteTaskWithWorktreeOption(m.deletingTaskID, false)
+		m.deletingTaskID = ""
+		m.mode = viewDashboard
+
+	case "esc":
+		// Cancel - go back to delete confirmation or dashboard
+		m.deletingTaskID = ""
+		m.mode = viewDashboard
+
+	case "ctrl+c":
+		return m, tea.Quit
+	}
+
+	return m, nil
+}
+
 // updateSettings handles settings popup input
 func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	settingsCount := 3
+	settingsCount := 4
 
 	switch msg.String() {
 	case "ctrl+c":
@@ -849,6 +923,18 @@ func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.config.AutoStartTasks = !m.config.AutoStartTasks
 		case 2:
 			m.config.ConfirmBeforeDelete = !m.config.ConfirmBeforeDelete
+		case 3:
+			// Cycle through worktree cleanup options: ask -> auto -> keep -> ask
+			switch m.config.Worktrees.Cleanup {
+			case config.WorktreeCleanupAsk:
+				m.config.Worktrees.Cleanup = config.WorktreeCleanupDelete
+			case config.WorktreeCleanupDelete:
+				m.config.Worktrees.Cleanup = config.WorktreeCleanupKeep
+			case config.WorktreeCleanupKeep:
+				m.config.Worktrees.Cleanup = config.WorktreeCleanupAsk
+			default:
+				m.config.Worktrees.Cleanup = config.WorktreeCleanupAsk
+			}
 		}
 		if err := m.config.Save(); err != nil {
 			m.addMessage(fmt.Sprintf("Failed to save settings: %v", err), true)
@@ -858,8 +944,19 @@ func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// deleteTask handles the actual deletion of a task
+// deleteTask handles the actual deletion of a task (legacy wrapper)
 func (m *Model) deleteTask(taskID string) {
+	// For non-confirmation deletes, check cleanup setting
+	if t, ok := m.tasks.Get(taskID); ok && t.WorktreePath != "" {
+		deleteWorktree := m.config.Worktrees.Cleanup == config.WorktreeCleanupDelete
+		m.deleteTaskWithWorktreeOption(taskID, deleteWorktree)
+	} else {
+		m.deleteTaskWithWorktreeOption(taskID, false)
+	}
+}
+
+// deleteTaskWithWorktreeOption handles deletion with explicit worktree cleanup option
+func (m *Model) deleteTaskWithWorktreeOption(taskID string, deleteWorktree bool) {
 	if t, ok := m.tasks.Get(taskID); ok {
 		// Close the zellij tab if task was started
 		if t.Status != task.StatusPending && t.TabName != "" {
@@ -872,6 +969,16 @@ func (m *Model) deleteTask(taskID string) {
 		m.zellij.DeleteStatusFile(taskID)
 		// Delete the prompt file
 		m.promptMgr.DeletePromptFile(taskID)
+		// Release the worktree if assigned and deletion requested
+		if deleteWorktree && m.gitAssigner != nil && t.WorktreePath != "" {
+			if err := m.gitAssigner.ReleaseWorktree(t.WorktreePath, t.RepoRoot); err != nil {
+				m.addMessage(fmt.Sprintf("Worktree cleanup warning: %v", err), true)
+			} else {
+				m.addMessage(fmt.Sprintf("Deleted worktree: %s", t.GitBranch), false)
+			}
+		} else if t.WorktreePath != "" && !deleteWorktree {
+			m.addMessage(fmt.Sprintf("Kept worktree: %s", t.WorktreePath), false)
+		}
 		if err := m.tasks.Delete(taskID); err != nil {
 			m.err = err
 		}
@@ -890,6 +997,8 @@ func (m Model) View() string {
 		return m.viewEditTask()
 	case viewConfirmDelete:
 		return m.viewConfirmDelete()
+	case viewConfirmWorktreeDelete:
+		return m.viewConfirmWorktreeDelete()
 	case viewSettings:
 		return m.viewSettings()
 	default:
@@ -1049,6 +1158,35 @@ func (m Model) viewConfirmDelete() string {
 	return m.centerContent(modalStyle.Render(b.String()))
 }
 
+// viewConfirmWorktreeDelete renders the worktree deletion confirmation dialog
+func (m Model) viewConfirmWorktreeDelete() string {
+	var b strings.Builder
+
+	t, ok := m.tasks.Get(m.deletingTaskID)
+	if !ok {
+		return m.viewDashboard()
+	}
+
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(colorWarning).
+		Render("Delete Worktree?")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	b.WriteString(fmt.Sprintf("Task '%s' has an associated worktree:\n", t.Name))
+	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render(fmt.Sprintf("  Branch: %s\n", t.GitBranch)))
+	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render(fmt.Sprintf("  Path: %s\n", t.WorktreePath)))
+	b.WriteString("\n")
+	b.WriteString("Do you want to delete the worktree and its branch?\n")
+
+	b.WriteString("\n")
+	help := helpStyle.Render("[y]es delete  [n/enter]keep worktree  [esc]cancel")
+	b.WriteString(help)
+
+	return m.centerContent(modalStyle.Render(b.String()))
+}
+
 // viewSettings renders the settings popup
 func (m Model) viewSettings() string {
 	var b strings.Builder
@@ -1076,6 +1214,26 @@ func (m Model) viewSettings() string {
 		b.WriteString("\n\n")
 	}
 
+	renderMultiOption := func(index int, label, description string, options []string, currentIdx int) {
+		// Build option display: [Ask] Auto Keep
+		var optDisplay strings.Builder
+		for i, opt := range options {
+			if i == currentIdx {
+				optDisplay.WriteString(fmt.Sprintf("[%s] ", opt))
+			} else {
+				optDisplay.WriteString(fmt.Sprintf("%s ", opt))
+			}
+		}
+		settingLabel := fmt.Sprintf("%s: %s", label, optDisplay.String())
+		if m.settingsSelected == index {
+			settingLabel = selectedRowStyle.Render(settingLabel)
+		}
+		b.WriteString(settingLabel)
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("    " + description))
+		b.WriteString("\n\n")
+	}
+
 	// Setting 0: Notifications
 	renderSetting(0, m.config.NotificationsEnabled, "Notifications", "Show status updates in the messages panel")
 
@@ -1084,6 +1242,19 @@ func (m Model) viewSettings() string {
 
 	// Setting 2: Confirm before delete
 	renderSetting(2, m.config.ConfirmBeforeDelete, "Confirm before delete", "Show confirmation dialog when deleting tasks")
+
+	// Setting 3: Worktree cleanup
+	cleanupOptions := []string{"Ask", "Delete", "Keep"}
+	cleanupIdx := 0
+	switch m.config.Worktrees.Cleanup {
+	case config.WorktreeCleanupAsk:
+		cleanupIdx = 0
+	case config.WorktreeCleanupDelete:
+		cleanupIdx = 1
+	case config.WorktreeCleanupKeep:
+		cleanupIdx = 2
+	}
+	renderMultiOption(3, "Worktree cleanup", "How to handle worktrees when deleting tasks", cleanupOptions, cleanupIdx)
 
 	help := helpStyle.Render("[j/k]navigate  [enter/space]toggle  [esc/S]close")
 	b.WriteString(help)
@@ -1239,9 +1410,9 @@ func (m Model) renderTasksPanel(width, height int) string {
 	}
 
 	// Calculate dynamic column widths based on available content width
-	// Fixed columns: ID (4), Status (12 with spinner), Age (6) = 22 fixed
+	// Fixed columns: ID (4), Status (12 with spinner), Branch (12), Age (6) = 34 fixed
 	// Variable columns: Name, Directory share remaining space
-	fixedWidth := 4 + 12 + 6 + 3 // +3 for spacing between columns
+	fixedWidth := 4 + 12 + 12 + 6 + 4 // +4 for spacing between columns
 	variableWidth := contentWidth - fixedWidth
 	if variableWidth < 20 {
 		variableWidth = 20
@@ -1253,8 +1424,8 @@ func (m Model) renderTasksPanel(width, height int) string {
 		b.WriteString("No tasks yet. Press 'n' to create one.\n")
 	} else {
 		// Header with dynamic widths
-		headerFmt := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%-%ds %%-%ds", 4, nameWidth, 12, dirWidth, 6)
-		header := fmt.Sprintf(headerFmt, "#", "Task", "Status", "Directory", "Age")
+		headerFmt := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%-%ds %%-%ds %%-%ds", 4, nameWidth, 12, 12, dirWidth, 6)
+		header := fmt.Sprintf(headerFmt, "#", "Task", "Status", "Branch", "Directory", "Age")
 		b.WriteString(tableHeaderStyle.Render(header))
 		b.WriteString("\n")
 
@@ -1310,13 +1481,17 @@ func (m Model) renderTasksPanel(width, height int) string {
 				dir = filepath.Base(dir)
 			}
 
+			// Show branch (empty if no worktree)
+			branch := t.GitBranch
+
 			// Build row with fixed-width columns using proper padding
 			idCol := fmt.Sprintf("%-4s", t.ID)
 			nameCol := fmt.Sprintf("%-*s", nameWidth, truncate(t.Name, nameWidth))
+			branchCol := fmt.Sprintf("%-12s", truncate(branch, 12))
 			dirCol := fmt.Sprintf("%-*s", dirWidth, truncate(dir, dirWidth))
 			ageCol := fmt.Sprintf("%-6s", t.AgeString())
 
-			row := idCol + " " + nameCol + " " + statusDisplay + " " + dirCol + " " + ageCol
+			row := idCol + " " + nameCol + " " + statusDisplay + " " + branchCol + " " + dirCol + " " + ageCol
 
 			if i == m.selected {
 				row = selectedRowStyle.Render(row)
@@ -1507,4 +1682,14 @@ func (m Model) centerContent(content string) string {
 		PaddingLeft(horizontalPadding).
 		PaddingTop(verticalPadding).
 		Render(content)
+}
+
+// getTaskWorktreeInfos converts task list to the interface needed by git.Assigner
+func (m Model) getTaskWorktreeInfos() []git.TaskWorktreeInfo {
+	tasks := m.tasks.List()
+	infos := make([]git.TaskWorktreeInfo, len(tasks))
+	for i, t := range tasks {
+		infos[i] = t
+	}
+	return infos
 }
