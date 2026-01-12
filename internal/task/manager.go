@@ -62,14 +62,14 @@ func (m *Manager) Save() error {
 }
 
 // Create creates a new task
-func (m *Manager) Create(name, promptFile, cwd string) (*Task, error) {
+func (m *Manager) Create(name, promptFile, cwd string, useWorktree bool) (*Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	id := fmt.Sprintf("%03d", m.counter)
 	m.counter++
 
-	task := NewTask(id, name, promptFile, cwd)
+	task := NewTask(id, name, promptFile, cwd, useWorktree)
 	m.tasks[id] = task
 	m.order = append(m.order, id)
 

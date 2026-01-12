@@ -21,6 +21,7 @@ type Config struct {
 	NotificationsEnabled bool   `json:"notifications_enabled"`
 	AutoStartTasks       bool   `json:"auto_start_tasks"`
 	ConfirmBeforeDelete  bool   `json:"confirm_before_delete"`
+	UseWorktree          bool   `json:"use_worktree"`
 
 	// Internal paths (not saved to config file)
 	configDir string
@@ -45,6 +46,7 @@ func Load() (*Config, error) {
 		NotificationsEnabled: true,  // enabled by default
 		AutoStartTasks:       false, // disabled by default
 		ConfirmBeforeDelete:  true,  // enabled by default
+		UseWorktree:          true,  // enabled by default
 		configDir:            configDir,
 	}
 

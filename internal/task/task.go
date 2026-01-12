@@ -17,15 +17,16 @@ const (
 
 // Task represents an AI agent task
 type Task struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	PromptFile string    `json:"prompt_file,omitempty"` // Path to the markdown prompt file (new format)
-	Prompt     string    `json:"prompt,omitempty"`      // Legacy: inline prompt text (for backward compatibility)
-	Cwd        string    `json:"cwd"`
-	Status     Status    `json:"status"`
-	TabName    string    `json:"tab_name"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	PromptFile  string    `json:"prompt_file,omitempty"` // Path to the markdown prompt file (new format)
+	Prompt      string    `json:"prompt,omitempty"`      // Legacy: inline prompt text (for backward compatibility)
+	Cwd         string    `json:"cwd"`
+	Status      Status    `json:"status"`
+	TabName     string    `json:"tab_name"`
+	UseWorktree bool      `json:"use_worktree"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // GetPromptOrFile returns the prompt file path, or legacy prompt if no file exists
@@ -38,7 +39,7 @@ func (t *Task) GetPromptOrFile() string {
 }
 
 // NewTask creates a new task with the given name and prompt file path
-func NewTask(id, name, promptFile, cwd string) *Task {
+func NewTask(id, name, promptFile, cwd string, useWorktree bool) *Task {
 	now := time.Now()
 	// Format: agent-XXX-taskName (e.g., agent-001-changingReadMe)
 	sanitized := sanitizeTabName(name)
@@ -48,14 +49,15 @@ func NewTask(id, name, promptFile, cwd string) *Task {
 	}
 	tabName := fmt.Sprintf("agent-%s-%s", id, sanitized)
 	return &Task{
-		ID:         id,
-		Name:       name,
-		PromptFile: promptFile,
-		Cwd:        cwd,
-		Status:     StatusPending,
-		TabName:    tabName,
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:          id,
+		Name:        name,
+		PromptFile:  promptFile,
+		Cwd:         cwd,
+		Status:      StatusPending,
+		TabName:     tabName,
+		UseWorktree: useWorktree,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 }
 
