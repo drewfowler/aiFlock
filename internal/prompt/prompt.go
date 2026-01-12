@@ -48,6 +48,11 @@ func (m *Manager) EnsureDefaultTemplate() error {
 
 // CreatePromptFile creates a new prompt file from the template
 func (m *Manager) CreatePromptFile(taskID, taskName, workingDir string) (string, error) {
+	return m.CreatePromptFileWithGoal(taskID, taskName, workingDir, "")
+}
+
+// CreatePromptFileWithGoal creates a new prompt file from the template with an optional goal
+func (m *Manager) CreatePromptFileWithGoal(taskID, taskName, workingDir, goal string) (string, error) {
 	// Ensure default template exists
 	if err := m.EnsureDefaultTemplate(); err != nil {
 		return "", fmt.Errorf("failed to ensure template: %w", err)
@@ -64,6 +69,14 @@ func (m *Manager) CreatePromptFile(taskID, taskName, workingDir string) (string,
 	content := string(templateContent)
 	content = strings.ReplaceAll(content, "{{name}}", taskName)
 	content = strings.ReplaceAll(content, "{{working_dir}}", workingDir)
+
+	// If goal is provided, insert it into the Goal section
+	if goal != "" {
+		// Find the Goal section and insert the goal text after it
+		goalSection := "## Goal\n\n"
+		goalInsert := "## Goal\n\n" + goal + "\n\n"
+		content = strings.Replace(content, goalSection, goalInsert, 1)
+	}
 
 	// Write prompt file
 	promptPath := m.config.PromptFilePath(taskID)

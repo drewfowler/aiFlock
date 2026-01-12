@@ -51,9 +51,10 @@ type Model struct {
 	statusUpdates chan StatusUpdate
 	err           error
 
-	// New task form (name and cwd only - prompt is edited in external editor)
+	// New task form (name, cwd, and optional goal - full prompt can be edited in external editor)
 	nameInput  textinput.Model
 	cwdInput   textinput.Model
+	goalInput  textinput.Model
 	focusIndex int
 
 	// Edit task tracking
@@ -118,6 +119,12 @@ func NewModel(tasks *task.Manager, zj *zellij.Controller, cfg *config.Config, st
 	cwdInput.CharLimit = 200
 	cwdInput.Width = 60
 
+	// Prompt input (optional short prompt)
+	goalInput := textinput.New()
+	goalInput.Placeholder = "Prompt (optional - leave empty to open editor)"
+	goalInput.CharLimit = 500
+	goalInput.Width = 60
+
 	// Spinner for working status
 	s := spinner.New()
 	s.Spinner = spinner.Spinner{
@@ -155,6 +162,7 @@ func NewModel(tasks *task.Manager, zj *zellij.Controller, cfg *config.Config, st
 		statusUpdates:        statusChan,
 		nameInput:            nameInput,
 		cwdInput:             cwdInput,
+		goalInput:            goalInput,
 		spinner:              s,
 		width:                width,
 		height:               height,
@@ -414,30 +422,34 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = viewDashboard
 		m.nameInput.Reset()
 		m.cwdInput.Reset()
+		m.goalInput.Reset()
 		return m, nil
 
 	case "tab", "shift+tab", "down", "up":
-		// Cycle focus between name and cwd (2 fields)
+		// Cycle focus between name, cwd, and goal (3 fields)
 		if msg.String() == "shift+tab" || msg.String() == "up" {
 			m.focusIndex--
 			if m.focusIndex < 0 {
-				m.focusIndex = 1
+				m.focusIndex = 2
 			}
 		} else {
 			m.focusIndex++
-			if m.focusIndex > 1 {
+			if m.focusIndex > 2 {
 				m.focusIndex = 0
 			}
 		}
 
 		m.nameInput.Blur()
 		m.cwdInput.Blur()
+		m.goalInput.Blur()
 
 		switch m.focusIndex {
 		case 0:
 			m.nameInput.Focus()
 		case 1:
 			m.cwdInput.Focus()
+		case 2:
+			m.goalInput.Focus()
 		}
 
 		return m, textinput.Blink
@@ -446,15 +458,17 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Open fzf to select a directory
 		return m, m.openFzfDirSelector()
 
-	case "enter":
-		// Open editor if name is filled
+	case "ctrl+e":
+		// Force open editor even if goal is filled
 		name := strings.TrimSpace(m.nameInput.Value())
 		cwd := strings.TrimSpace(m.cwdInput.Value())
+		goal := strings.TrimSpace(m.goalInput.Value())
 
 		if name != "" {
 			// Reset inputs now
 			m.nameInput.Reset()
 			m.cwdInput.Reset()
+			m.goalInput.Reset()
 
 			// Get next task ID and create prompt file
 			taskID := m.tasks.NextID()
@@ -462,8 +476,8 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				cwd = "."
 			}
 
-			// Create prompt file from template
-			promptFile, err := m.promptMgr.CreatePromptFile(taskID, name, cwd)
+			// Create prompt file from template with goal
+			promptFile, err := m.promptMgr.CreatePromptFileWithGoal(taskID, name, cwd, goal)
 			if err != nil {
 				m.err = err
 				m.addMessage(fmt.Sprintf("Failed to create prompt file: %v", err), true)
@@ -475,6 +489,50 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.openEditor(name, promptFile, cwd)
 		}
 		return m, nil
+
+	case "enter":
+		// Create task - if goal is empty, open editor; otherwise create directly
+		name := strings.TrimSpace(m.nameInput.Value())
+		cwd := strings.TrimSpace(m.cwdInput.Value())
+		goal := strings.TrimSpace(m.goalInput.Value())
+
+		if name != "" {
+			// Reset inputs now
+			m.nameInput.Reset()
+			m.cwdInput.Reset()
+			m.goalInput.Reset()
+
+			// Get next task ID and create prompt file
+			taskID := m.tasks.NextID()
+			if cwd == "" {
+				cwd = "."
+			}
+
+			// Create prompt file from template with goal
+			promptFile, err := m.promptMgr.CreatePromptFileWithGoal(taskID, name, cwd, goal)
+			if err != nil {
+				m.err = err
+				m.addMessage(fmt.Sprintf("Failed to create prompt file: %v", err), true)
+				m.mode = viewDashboard
+				return m, nil
+			}
+
+			if goal == "" {
+				// No goal provided - open editor
+				return m, m.openEditor(name, promptFile, cwd)
+			}
+
+			// Goal provided - create task directly without opening editor
+			return m, func() tea.Msg {
+				return editorFinishedMsg{
+					taskName:   name,
+					promptFile: promptFile,
+					cwd:        cwd,
+					err:        nil,
+				}
+			}
+		}
+		return m, nil
 	}
 
 	// Update focused input
@@ -484,6 +542,8 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.nameInput, cmd = m.nameInput.Update(msg)
 	case 1:
 		m.cwdInput, cmd = m.cwdInput.Update(msg)
+	case 2:
+		m.goalInput, cmd = m.goalInput.Update(msg)
 	}
 
 	return m, cmd
@@ -685,14 +745,22 @@ func (m Model) openEditorForEdit(promptFile string) tea.Cmd {
 
 // openFzfDirSelector opens fzf to select a directory
 func (m Model) openFzfDirSelector() tea.Cmd {
+	// Get home directory
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return func() tea.Msg {
+			return fzfFinishedMsg{dir: "", err: err}
+		}
+	}
+
 	// Use fd if available, otherwise fall back to find
 	// fd: fd --type d
 	// find: find . -type d
 	var listCmd string
 	if _, err := exec.LookPath("fd"); err == nil {
-		listCmd = "fd --type d --hidden --exclude .git"
+		listCmd = "fd --type d --hidden --exclude .git . " + homeDir
 	} else {
-		listCmd = "find . -type d -name '.git' -prune -o -type d -print"
+		listCmd = "find " + homeDir + " -type d -name '.git' -prune -o -type d -print"
 	}
 
 	// Create a temp file to capture output
@@ -907,10 +975,15 @@ func (m Model) viewNewTask() string {
 	b.WriteString(m.cwdInput.View())
 	b.WriteString("\n\n")
 
-	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("Press Enter to open editor for task prompt..."))
+	b.WriteString(inputLabelStyle.Render("Prompt:"))
+	b.WriteString("\n")
+	b.WriteString(m.goalInput.View())
 	b.WriteString("\n\n")
 
-	help := helpStyle.Render("[tab]next field  [ctrl+f]fzf dir  [enter]open editor  [esc]cancel")
+	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("Enter with prompt: create task | Enter without: open editor"))
+	b.WriteString("\n\n")
+
+	help := helpStyle.Render("[tab]next  [ctrl+f]fzf dir  [ctrl+e]open editor  [enter]create  [esc]cancel")
 	b.WriteString(help)
 
 	return m.centerContent(modalStyle.Render(b.String()))
