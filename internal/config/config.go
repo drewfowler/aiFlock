@@ -7,11 +7,9 @@ import (
 )
 
 const (
-	DefaultConfigDir  = ".flock"
-	configFileName    = "config.json"
-	promptsDir        = "prompts"
-	templatesDir      = "templates"
-	defaultTemplate   = "default.md"
+	DefaultConfigDir = ".flock"
+	configFileName   = "config.json"
+	promptsDir       = "prompts"
 )
 
 // WorktreeCleanup defines worktree cleanup behavior on task deletion
@@ -36,7 +34,6 @@ type WorktreeConfig struct {
 // Config holds flock configuration
 type Config struct {
 	PromptsDir           string         `json:"prompts_dir"`
-	TemplatesDir         string         `json:"templates_dir"`
 	NotificationsEnabled bool           `json:"notifications_enabled"`
 	AutoStartTasks       bool           `json:"auto_start_tasks"`
 	ConfirmBeforeDelete  bool           `json:"confirm_before_delete"`
@@ -62,7 +59,6 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		PromptsDir:           filepath.Join(configDir, promptsDir),
-		TemplatesDir:         filepath.Join(configDir, templatesDir),
 		NotificationsEnabled: true,  // enabled by default
 		AutoStartTasks:       false, // disabled by default
 		ConfirmBeforeDelete:  true,  // enabled by default
@@ -114,25 +110,14 @@ func (c *Config) Save() error {
 	return os.WriteFile(configPath, data, 0644)
 }
 
-// ensureDirectories creates prompts and templates directories if they don't exist
+// ensureDirectories creates the prompts directory if it doesn't exist
 func (c *Config) ensureDirectories() error {
-	if err := os.MkdirAll(c.PromptsDir, 0755); err != nil {
-		return err
-	}
-	if err := os.MkdirAll(c.TemplatesDir, 0755); err != nil {
-		return err
-	}
-	return nil
+	return os.MkdirAll(c.PromptsDir, 0755)
 }
 
 // ConfigDir returns the base config directory (~/.flock)
 func (c *Config) ConfigDir() string {
 	return c.configDir
-}
-
-// DefaultTemplatePath returns the path to the default template
-func (c *Config) DefaultTemplatePath() string {
-	return filepath.Join(c.TemplatesDir, defaultTemplate)
 }
 
 // PromptFilePath returns the path for a task's prompt file
