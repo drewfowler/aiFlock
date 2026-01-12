@@ -1570,22 +1570,24 @@ func (m Model) renderTasksPanel(width, height int) string {
 	}
 
 	// Calculate dynamic column widths based on available content width
-	// Fixed columns: ID (4), Status (12 with spinner), Branch (12), Age (6) = 34 fixed
+	// Fixed columns: ID (4), Status (12 with spinner), Branch (12), Git (8), Age (6) = 42 fixed
 	// Variable columns: Name, Directory share remaining space
-	fixedWidth := 4 + 12 + 12 + 6 + 4 // +4 for spacing between columns
+	fixedWidth := 4 + 12 + 12 + 8 + 6 + 5 // +5 for spacing between columns
 	variableWidth := contentWidth - fixedWidth
 	if variableWidth < 20 {
 		variableWidth = 20
 	}
 	nameWidth := variableWidth * 3 / 5
 	dirWidth := variableWidth - nameWidth
+	branchWidth := 12
+	gitWidth := 8
 
 	if len(tasks) == 0 {
 		b.WriteString("No tasks yet. Press 'n' to create one.\n")
 	} else {
 		// Header with dynamic widths
-		headerFmt := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%-%ds %%-%ds %%-%ds", 4, nameWidth, 12, 12, dirWidth, 6)
-		header := fmt.Sprintf(headerFmt, "#", "Task", "Status", "Branch", "Directory", "Age")
+		headerFmt := fmt.Sprintf("%%-%ds %%-%ds %%-%ds %%-%ds %%-%ds %%-%ds %%-%ds", 4, nameWidth, 12, branchWidth, gitWidth, dirWidth, 6)
+		header := fmt.Sprintf(headerFmt, "#", "Task", "Status", "Branch", "Git", "Directory", "Age")
 		b.WriteString(tableHeaderStyle.Render(header))
 		b.WriteString("\n")
 
@@ -1641,17 +1643,20 @@ func (m Model) renderTasksPanel(width, height int) string {
 				dir = filepath.Base(dir)
 			}
 
-			// Show branch (empty if no worktree)
-			branch := t.GitBranch
+			// Get git branch status for this task's working directory
+			gitStatus := git.GetBranchStatus(t.Cwd)
+			branchDisplay := gitStatus.Branch
+			gitDisplay := gitStatus.FormatStatus()
 
 			// Build row with fixed-width columns using proper padding
 			idCol := fmt.Sprintf("%-4s", t.ID)
 			nameCol := fmt.Sprintf("%-*s", nameWidth, truncate(t.Name, nameWidth))
-			branchCol := fmt.Sprintf("%-12s", truncate(branch, 12))
+			branchCol := fmt.Sprintf("%-*s", branchWidth, truncate(branchDisplay, branchWidth))
+			gitCol := fmt.Sprintf("%-*s", gitWidth, truncate(gitDisplay, gitWidth))
 			dirCol := fmt.Sprintf("%-*s", dirWidth, truncate(dir, dirWidth))
 			ageCol := fmt.Sprintf("%-6s", t.AgeString())
 
-			row := idCol + " " + nameCol + " " + statusDisplay + " " + branchCol + " " + dirCol + " " + ageCol
+			row := idCol + " " + nameCol + " " + statusDisplay + " " + branchCol + " " + gitCol + " " + dirCol + " " + ageCol
 
 			if i == m.selected {
 				row = selectedRowStyle.Render(row)
