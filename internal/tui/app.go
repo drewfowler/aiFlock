@@ -75,6 +75,9 @@ type Model struct {
 	// Glamour renderer for markdown (cached to avoid recreation on every render)
 	glamourRenderer     *glamour.TermRenderer
 	glamourRendererWidth int
+
+	// Git status (cached and updated periodically)
+	gitStatus *GitStatus
 }
 
 // StatusUpdate represents a status change from the watcher
@@ -103,6 +106,11 @@ type editFinishedMsg struct {
 type fzfFinishedMsg struct {
 	dir string
 	err error
+}
+
+// gitStatusMsg is sent when git status is refreshed
+type gitStatusMsg struct {
+	status *GitStatus
 }
 
 // NewModel creates a new TUI model
@@ -176,7 +184,25 @@ func (m Model) Init() tea.Cmd {
 	return tea.Batch(
 		waitForStatus(m.statusUpdates),
 		m.spinner.Tick,
+		refreshGitStatus(),
 	)
+}
+
+// refreshGitStatus returns a command that fetches git status
+func refreshGitStatus() tea.Cmd {
+	return func() tea.Msg {
+		return gitStatusMsg{status: GetGitStatus()}
+	}
+}
+
+// gitStatusTickMsg triggers a git status refresh
+type gitStatusTickMsg struct{}
+
+// scheduleGitStatusRefresh schedules the next git status refresh
+func scheduleGitStatusRefresh() tea.Cmd {
+	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
+		return gitStatusTickMsg{}
+	})
 }
 
 // addMessage adds a message to the messages panel (keeps last 5 messages)
@@ -232,6 +258,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
+
+	case gitStatusMsg:
+		m.gitStatus = msg.status
+		return m, scheduleGitStatusRefresh()
+
+	case gitStatusTickMsg:
+		return m, refreshGitStatus()
 
 	case StatusMsg:
 		// Update task status (silently ignore if task doesn't exist)
@@ -1357,7 +1390,13 @@ func (m Model) renderTasksPanel(width, height int) string {
 	)
 	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render(stats))
 
-	return m.renderPanel("Tasks", b.String(), width, height, true)
+	// Build panel title with git status
+	title := "Tasks"
+	if m.gitStatus != nil && m.gitStatus.Branch != "" {
+		title = title + m.gitStatus.FormatGitStatusIcons()
+	}
+
+	return m.renderPanel(title, b.String(), width, height, true)
 }
 
 // renderStatusPanel renders the status panel

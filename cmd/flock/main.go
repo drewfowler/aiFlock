@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -19,7 +20,10 @@ import (
 
 const statusDir = "/tmp/flock"
 
+var debugMode = flag.Bool("debug", false, "Debug mode: skip tab rename (useful for testing in agent tabs)")
+
 func main() {
+	flag.Parse()
 	// Check if running in zellij
 	if !zellij.IsInZellij() {
 		fmt.Fprintln(os.Stderr, "flock must be run inside a zellij session")
@@ -62,9 +66,11 @@ func main() {
 	// Initialize zellij controller
 	zjController := zellij.NewController(cwd)
 
-	// Rename current tab to 'flock'
-	if err := zjController.RenameCurrentTab("flock"); err != nil {
-		log.Printf("warning: failed to rename tab: %v", err)
+	// Rename current tab to 'flock' (skip in debug mode)
+	if !*debugMode {
+		if err := zjController.RenameCurrentTab("flock"); err != nil {
+			log.Printf("warning: failed to rename tab: %v", err)
+		}
 	}
 
 	// Create status update channel
