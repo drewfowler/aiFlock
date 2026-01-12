@@ -196,3 +196,91 @@ func IsPathInWorktree(path string) bool {
 	cmd = exec.Command("test", "-f", gitPath)
 	return cmd.Run() == nil
 }
+
+// MergeResult contains the result of a merge operation
+type MergeResult struct {
+	Success      bool
+	Message      string
+	HasConflicts bool
+}
+
+// MergeBranch merges the given branch into the default branch
+func MergeBranch(repoRoot, branch string) (*MergeResult, error) {
+	defaultBranch, err := GetDefaultBranch(repoRoot)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get default branch: %w", err)
+	}
+
+	// First, checkout the default branch in the main repo
+	cmd := exec.Command("git", "-C", repoRoot, "checkout", defaultBranch)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return &MergeResult{
+			Success: false,
+			Message: fmt.Sprintf("Failed to checkout %s: %s", defaultBranch, strings.TrimSpace(string(output))),
+		}, nil
+	}
+
+	// Perform the merge
+	cmd = exec.Command("git", "-C", repoRoot, "merge", branch, "--no-edit")
+	output, err = cmd.CombinedOutput()
+	outputStr := strings.TrimSpace(string(output))
+
+	if err != nil {
+		// Check if it's a merge conflict
+		if strings.Contains(outputStr, "CONFLICT") || strings.Contains(outputStr, "Automatic merge failed") {
+			return &MergeResult{
+				Success:      false,
+				HasConflicts: true,
+				Message:      fmt.Sprintf("Merge conflicts detected. Resolve conflicts in %s", repoRoot),
+			}, nil
+		}
+		return &MergeResult{
+			Success: false,
+			Message: fmt.Sprintf("Merge failed: %s", outputStr),
+		}, nil
+	}
+
+	// Check if it was a fast-forward or actual merge
+	if strings.Contains(outputStr, "Fast-forward") {
+		return &MergeResult{
+			Success: true,
+			Message: fmt.Sprintf("Fast-forward merged %s into %s", branch, defaultBranch),
+		}, nil
+	}
+
+	return &MergeResult{
+		Success: true,
+		Message: fmt.Sprintf("Merged %s into %s", branch, defaultBranch),
+	}, nil
+}
+
+// GetBranchDiff returns a summary of changes between the branch and default branch
+func GetBranchDiff(repoRoot, branch string) (string, error) {
+	defaultBranch, err := GetDefaultBranch(repoRoot)
+	if err != nil {
+		return "", err
+	}
+
+	// Get commit count
+	cmd := exec.Command("git", "-C", repoRoot, "rev-list", "--count", fmt.Sprintf("%s..%s", defaultBranch, branch))
+	output, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	commitCount := strings.TrimSpace(string(output))
+
+	// Get diffstat
+	cmd = exec.Command("git", "-C", repoRoot, "diff", "--stat", fmt.Sprintf("%s..%s", defaultBranch, branch))
+	output, err = cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	diffStat := strings.TrimSpace(string(output))
+
+	if commitCount == "0" {
+		return "No changes to merge", nil
+	}
+
+	return fmt.Sprintf("%s commit(s)\n%s", commitCount, diffStat), nil
+}

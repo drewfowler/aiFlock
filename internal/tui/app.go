@@ -30,6 +30,7 @@ const (
 	viewEditTask
 	viewConfirmDelete
 	viewConfirmWorktreeDelete
+	viewConfirmMerge
 	viewSettings
 )
 
@@ -65,6 +66,10 @@ type Model struct {
 
 	// Delete confirmation tracking
 	deletingTaskID string
+
+	// Merge confirmation tracking
+	mergingTaskID string
+	mergeDiffInfo string
 
 	// Settings popup tracking
 	settingsSelected int
@@ -349,6 +354,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateConfirmDelete(msg)
 		case viewConfirmWorktreeDelete:
 			return m.updateConfirmWorktreeDelete(msg)
+		case viewConfirmMerge:
+			return m.updateConfirmMerge(msg)
 		case viewSettings:
 			return m.updateSettings(msg)
 		}
@@ -437,6 +444,22 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				// Delete immediately without confirmation
 				m.deleteTask(t.ID)
+			}
+		}
+
+	case "m":
+		// Merge task branch into main (only for tasks with worktrees)
+		if len(tasks) > 0 && m.selected < len(tasks) {
+			t := tasks[m.selected]
+			if t.GitBranch != "" && t.RepoRoot != "" {
+				m.mergingTaskID = t.ID
+				// Get diff info for display
+				if diffInfo, err := git.GetBranchDiff(t.RepoRoot, t.GitBranch); err == nil {
+					m.mergeDiffInfo = diffInfo
+				} else {
+					m.mergeDiffInfo = "Unable to get diff info"
+				}
+				m.mode = viewConfirmMerge
 			}
 		}
 
@@ -892,6 +915,38 @@ func (m Model) updateConfirmWorktreeDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	return m, nil
 }
 
+// updateConfirmMerge handles merge confirmation input
+func (m Model) updateConfirmMerge(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y", "enter":
+		// Perform the merge
+		if t, ok := m.tasks.Get(m.mergingTaskID); ok && t.GitBranch != "" && t.RepoRoot != "" {
+			result, err := git.MergeBranch(t.RepoRoot, t.GitBranch)
+			if err != nil {
+				m.addMessage(fmt.Sprintf("Merge error: %v", err), true)
+			} else if result.Success {
+				m.addMessage(result.Message, false)
+			} else {
+				m.addMessage(result.Message, true)
+			}
+		}
+		m.mergingTaskID = ""
+		m.mergeDiffInfo = ""
+		m.mode = viewDashboard
+
+	case "n", "N", "esc":
+		// Cancel merge
+		m.mergingTaskID = ""
+		m.mergeDiffInfo = ""
+		m.mode = viewDashboard
+
+	case "ctrl+c":
+		return m, tea.Quit
+	}
+
+	return m, nil
+}
+
 // updateSettings handles settings popup input
 func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	settingsCount := 4
@@ -924,7 +979,7 @@ func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 2:
 			m.config.ConfirmBeforeDelete = !m.config.ConfirmBeforeDelete
 		case 3:
-			// Cycle through worktree cleanup options: ask -> auto -> keep -> ask
+			// Cycle through worktree cleanup options: ask -> delete -> keep -> ask
 			switch m.config.Worktrees.Cleanup {
 			case config.WorktreeCleanupAsk:
 				m.config.Worktrees.Cleanup = config.WorktreeCleanupDelete
@@ -999,6 +1054,8 @@ func (m Model) View() string {
 		return m.viewConfirmDelete()
 	case viewConfirmWorktreeDelete:
 		return m.viewConfirmWorktreeDelete()
+	case viewConfirmMerge:
+		return m.viewConfirmMerge()
 	case viewSettings:
 		return m.viewSettings()
 	default:
@@ -1187,6 +1244,49 @@ func (m Model) viewConfirmWorktreeDelete() string {
 	return m.centerContent(modalStyle.Render(b.String()))
 }
 
+// viewConfirmMerge renders the merge confirmation dialog
+func (m Model) viewConfirmMerge() string {
+	var b strings.Builder
+
+	t, ok := m.tasks.Get(m.mergingTaskID)
+	if !ok {
+		return m.viewDashboard()
+	}
+
+	title := lipgloss.NewStyle().
+		Bold(true).
+		Foreground(lipgloss.Color("39")). // blue
+		Render("Merge Branch?")
+	b.WriteString(title)
+	b.WriteString("\n\n")
+
+	b.WriteString(fmt.Sprintf("Merge branch '%s' into main?\n\n", t.GitBranch))
+
+	// Show diff info
+	if m.mergeDiffInfo != "" {
+		b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("Changes:\n"))
+		// Limit diff info display
+		lines := strings.Split(m.mergeDiffInfo, "\n")
+		maxLines := 8
+		if len(lines) > maxLines {
+			for i := 0; i < maxLines-1; i++ {
+				b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("  " + lines[i] + "\n"))
+			}
+			b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render(fmt.Sprintf("  ... and %d more lines\n", len(lines)-maxLines+1)))
+		} else {
+			for _, line := range lines {
+				b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("  " + line + "\n"))
+			}
+		}
+	}
+
+	b.WriteString("\n")
+	help := helpStyle.Render("[y/enter]merge  [n]o  [esc]cancel")
+	b.WriteString(help)
+
+	return m.centerContent(modalStyle.Render(b.String()))
+}
+
 // viewSettings renders the settings popup
 func (m Model) viewSettings() string {
 	var b strings.Builder
@@ -1215,7 +1315,7 @@ func (m Model) viewSettings() string {
 	}
 
 	renderMultiOption := func(index int, label, description string, options []string, currentIdx int) {
-		// Build option display: [Ask] Auto Keep
+		// Build option display: [Ask] Delete Keep
 		var optDisplay strings.Builder
 		for i, opt := range options {
 			if i == currentIdx {
