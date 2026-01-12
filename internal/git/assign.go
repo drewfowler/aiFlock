@@ -76,6 +76,12 @@ func (a *Assigner) AssignWorktree(taskID, taskCwd string, activeTasks []TaskWork
 		worktrees, _ := ListWorktrees(repoRoot)
 		for _, wt := range worktrees {
 			if wt.Path == freePath {
+				// Reset the branch to the current default branch HEAD
+				// This ensures the reused worktree starts fresh with latest code
+				if err := ResetWorktreeBranch(wt.Path); err != nil {
+					return nil, fmt.Errorf("failed to reset worktree branch: %w", err)
+				}
+
 				assignment = &WorktreeAssignment{
 					WorktreePath: wt.Path,
 					GitBranch:    wt.Branch,

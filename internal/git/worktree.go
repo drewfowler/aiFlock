@@ -255,6 +255,32 @@ func MergeBranch(repoRoot, branch string) (*MergeResult, error) {
 	}, nil
 }
 
+// ResetWorktreeBranch resets a worktree's branch to the current default branch HEAD
+// This ensures a reused worktree starts fresh with the latest code
+func ResetWorktreeBranch(worktreePath string) error {
+	// Get the repo root for this worktree
+	repoRoot, err := GetRepoRoot(worktreePath)
+	if err != nil {
+		return fmt.Errorf("failed to get repo root: %w", err)
+	}
+
+	// Get the default branch name
+	defaultBranch, err := GetDefaultBranch(repoRoot)
+	if err != nil {
+		return fmt.Errorf("failed to get default branch: %w", err)
+	}
+
+	// Reset the worktree's branch to the default branch HEAD
+	// This is equivalent to: git reset --hard origin/main (but using local default branch)
+	cmd := exec.Command("git", "-C", worktreePath, "reset", "--hard", defaultBranch)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("failed to reset branch: %s: %w", string(output), err)
+	}
+
+	return nil
+}
+
 // GetBranchDiff returns a summary of changes between the branch and default branch
 func GetBranchDiff(repoRoot, branch string) (string, error) {
 	defaultBranch, err := GetDefaultBranch(repoRoot)
