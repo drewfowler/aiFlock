@@ -1001,13 +1001,13 @@ func (m Model) viewNewTask() string {
 	if m.useWorktree {
 		worktreeStatus = "[x]"
 	}
-	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render(fmt.Sprintf("%s Use worktree (ctrl+w to toggle)", worktreeStatus)))
+	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render(fmt.Sprintf("%s Use worktree", worktreeStatus)))
 	b.WriteString("\n\n")
 
 	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("Enter with prompt: create task | Enter without: open editor"))
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 
-	help := helpStyle.Render("[tab]next  [ctrl+f]fzf dir  [ctrl+w]worktree  [ctrl+e]editor  [enter]create  [esc]cancel")
+	help := helpStyle.Render("[tab]next  [ctrl+f]fzf  [ctrl+w]worktree  [ctrl+e]editor  [enter]create  [esc]cancel")
 	b.WriteString(help)
 
 	return m.centerContent(modalStyle.Render(b.String()))
