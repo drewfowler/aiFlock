@@ -820,7 +820,7 @@ func (m Model) updateConfirmDelete(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateSettings handles settings popup input
 func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	settingsCount := 3
+	settingsCount := 4
 
 	switch msg.String() {
 	case "ctrl+c":
@@ -849,6 +849,8 @@ func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.config.AutoStartTasks = !m.config.AutoStartTasks
 		case 2:
 			m.config.ConfirmBeforeDelete = !m.config.ConfirmBeforeDelete
+		case 3:
+			m.config.CycleWorktreeMode()
 		}
 		if err := m.config.Save(); err != nil {
 			m.addMessage(fmt.Sprintf("Failed to save settings: %v", err), true)
@@ -1076,6 +1078,17 @@ func (m Model) viewSettings() string {
 		b.WriteString("\n\n")
 	}
 
+	renderCycleSetting := func(index int, value, label, description string) {
+		settingLabel := fmt.Sprintf("<%s> %s", value, label)
+		if m.settingsSelected == index {
+			settingLabel = selectedRowStyle.Render(settingLabel)
+		}
+		b.WriteString(settingLabel)
+		b.WriteString("\n")
+		b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("    " + description))
+		b.WriteString("\n\n")
+	}
+
 	// Setting 0: Notifications
 	renderSetting(0, m.config.NotificationsEnabled, "Notifications", "Show status updates in the messages panel")
 
@@ -1084,6 +1097,9 @@ func (m Model) viewSettings() string {
 
 	// Setting 2: Confirm before delete
 	renderSetting(2, m.config.ConfirmBeforeDelete, "Confirm before delete", "Show confirmation dialog when deleting tasks")
+
+	// Setting 3: Worktree mode
+	renderCycleSetting(3, m.config.WorktreeModeLabel(), "Worktree mode", "Auto: use if git repo | Always: require | Never: disable")
 
 	help := helpStyle.Render("[j/k]navigate  [enter/space]toggle  [esc/S]close")
 	b.WriteString(help)

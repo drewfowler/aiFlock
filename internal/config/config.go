@@ -14,13 +14,23 @@ const (
 	defaultTemplate   = "default.md"
 )
 
+// WorktreeMode defines how worktrees are used for tasks
+type WorktreeMode string
+
+const (
+	WorktreeModeAuto   WorktreeMode = "auto"   // Use worktrees if in a git repo
+	WorktreeModeAlways WorktreeMode = "always" // Always use worktrees
+	WorktreeModeNever  WorktreeMode = "never"  // Never use worktrees
+)
+
 // Config holds flock configuration
 type Config struct {
-	PromptsDir           string `json:"prompts_dir"`
-	TemplatesDir         string `json:"templates_dir"`
-	NotificationsEnabled bool   `json:"notifications_enabled"`
-	AutoStartTasks       bool   `json:"auto_start_tasks"`
-	ConfirmBeforeDelete  bool   `json:"confirm_before_delete"`
+	PromptsDir           string       `json:"prompts_dir"`
+	TemplatesDir         string       `json:"templates_dir"`
+	NotificationsEnabled bool         `json:"notifications_enabled"`
+	AutoStartTasks       bool         `json:"auto_start_tasks"`
+	ConfirmBeforeDelete  bool         `json:"confirm_before_delete"`
+	WorktreeMode         WorktreeMode `json:"worktree_mode"`
 
 	// Internal paths (not saved to config file)
 	configDir string
@@ -42,9 +52,10 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		PromptsDir:           filepath.Join(configDir, promptsDir),
 		TemplatesDir:         filepath.Join(configDir, templatesDir),
-		NotificationsEnabled: true,  // enabled by default
-		AutoStartTasks:       false, // disabled by default
-		ConfirmBeforeDelete:  true,  // enabled by default
+		NotificationsEnabled: true,             // enabled by default
+		AutoStartTasks:       false,            // disabled by default
+		ConfirmBeforeDelete:  true,             // enabled by default
+		WorktreeMode:         WorktreeModeAuto, // auto by default
 		configDir:            configDir,
 	}
 
@@ -111,4 +122,32 @@ func (c *Config) DefaultTemplatePath() string {
 // PromptFilePath returns the path for a task's prompt file
 func (c *Config) PromptFilePath(taskID string) string {
 	return filepath.Join(c.PromptsDir, taskID+".md")
+}
+
+// CycleWorktreeMode cycles through worktree modes: auto -> always -> never -> auto
+func (c *Config) CycleWorktreeMode() {
+	switch c.WorktreeMode {
+	case WorktreeModeAuto:
+		c.WorktreeMode = WorktreeModeAlways
+	case WorktreeModeAlways:
+		c.WorktreeMode = WorktreeModeNever
+	case WorktreeModeNever:
+		c.WorktreeMode = WorktreeModeAuto
+	default:
+		c.WorktreeMode = WorktreeModeAuto
+	}
+}
+
+// WorktreeModeLabel returns a human-readable label for the current worktree mode
+func (c *Config) WorktreeModeLabel() string {
+	switch c.WorktreeMode {
+	case WorktreeModeAuto:
+		return "Auto"
+	case WorktreeModeAlways:
+		return "Always"
+	case WorktreeModeNever:
+		return "Never"
+	default:
+		return "Auto"
+	}
 }
