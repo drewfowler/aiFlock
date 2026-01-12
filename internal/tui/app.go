@@ -56,10 +56,11 @@ type Model struct {
 	err           error
 
 	// New task form (name, cwd, and optional goal - full prompt can be edited in external editor)
-	nameInput  textinput.Model
-	cwdInput   textinput.Model
-	goalInput  textinput.Model
-	focusIndex int
+	nameInput      textinput.Model
+	cwdInput       textinput.Model
+	goalInput      textinput.Model
+	useWorktree    bool // Per-task worktree toggle (defaults to config value)
+	focusIndex     int
 
 	// Edit task tracking
 	editingTaskID string
@@ -99,10 +100,11 @@ type StatusMsg StatusUpdate
 
 // editorFinishedMsg is sent when the external editor closes for new task
 type editorFinishedMsg struct {
-	taskName   string
-	promptFile string
-	cwd        string
-	err        error
+	taskName    string
+	promptFile  string
+	cwd         string
+	useWorktree bool
+	err         error
 }
 
 // editFinishedMsg is sent when editing an existing task's prompt file completes
@@ -296,8 +298,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addMessage(fmt.Sprintf("Editor error: %v", msg.err), true)
 		} else {
 			// Try to assign a worktree if enabled
-			var createOpts *task.CreateOptions
-			if m.gitAssigner != nil {
+			createOpts := &task.CreateOptions{
+				UseWorktree: msg.useWorktree,
+			}
+			if msg.useWorktree && m.gitAssigner != nil {
 				taskID := m.tasks.NextID()
 				cwd := msg.cwd
 				if cwd == "" {
@@ -314,11 +318,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if assignment, err := m.gitAssigner.AssignWorktree(taskID, cwd, activeTasks); err != nil {
 					m.addMessage(fmt.Sprintf("Worktree warning: %v", err), true)
 				} else if assignment != nil {
-					createOpts = &task.CreateOptions{
-						WorktreePath: assignment.WorktreePath,
-						GitBranch:    assignment.GitBranch,
-						RepoRoot:     assignment.RepoRoot,
-					}
+					createOpts.WorktreePath = assignment.WorktreePath
+					createOpts.GitBranch = assignment.GitBranch
+					createOpts.RepoRoot = assignment.RepoRoot
 				}
 			}
 
@@ -419,6 +421,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.mode = viewNewTask
 		m.nameInput.Focus()
 		m.focusIndex = 0
+		m.useWorktree = m.config.UseWorktree // Initialize from config default
 		return m, textinput.Blink
 
 	case "e":
@@ -518,6 +521,11 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.goalInput.Reset()
 		return m, nil
 
+	case "ctrl+w":
+		// Toggle worktree option
+		m.useWorktree = !m.useWorktree
+		return m, nil
+
 	case "tab", "shift+tab", "down", "up":
 		// Cycle focus between name, cwd, and goal (3 fields)
 		if msg.String() == "shift+tab" || msg.String() == "up" {
@@ -556,6 +564,7 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		name := strings.TrimSpace(m.nameInput.Value())
 		cwd := strings.TrimSpace(m.cwdInput.Value())
 		goal := strings.TrimSpace(m.goalInput.Value())
+		useWorktree := m.useWorktree
 
 		if name != "" {
 			// Reset inputs now
@@ -579,7 +588,7 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 
 			// Open editor - this suspends the TUI
-			return m, m.openEditor(name, promptFile, cwd)
+			return m, m.openEditor(name, promptFile, cwd, useWorktree)
 		}
 		return m, nil
 
@@ -588,6 +597,7 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		name := strings.TrimSpace(m.nameInput.Value())
 		cwd := strings.TrimSpace(m.cwdInput.Value())
 		goal := strings.TrimSpace(m.goalInput.Value())
+		useWorktree := m.useWorktree
 
 		if name != "" {
 			// Reset inputs now
@@ -612,16 +622,17 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 			if goal == "" {
 				// No goal provided - open editor
-				return m, m.openEditor(name, promptFile, cwd)
+				return m, m.openEditor(name, promptFile, cwd, useWorktree)
 			}
 
 			// Goal provided - create task directly without opening editor
 			return m, func() tea.Msg {
 				return editorFinishedMsg{
-					taskName:   name,
-					promptFile: promptFile,
-					cwd:        cwd,
-					err:        nil,
+					taskName:    name,
+					promptFile:  promptFile,
+					cwd:         cwd,
+					useWorktree: useWorktree,
+					err:         nil,
 				}
 			}
 		}
@@ -643,7 +654,7 @@ func (m Model) updateNewTask(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // openEditor returns a command that opens the editor and sends editorFinishedMsg when done
-func (m Model) openEditor(taskName, promptFile, cwd string) tea.Cmd {
+func (m Model) openEditor(taskName, promptFile, cwd string, useWorktree bool) tea.Cmd {
 	editor := getEditor()
 
 	// For GUI editors, start the process without blocking and return immediately
@@ -652,18 +663,20 @@ func (m Model) openEditor(taskName, promptFile, cwd string) tea.Cmd {
 			c := exec.Command(editor, promptFile)
 			if err := c.Start(); err != nil {
 				return editorFinishedMsg{
-					taskName:   taskName,
-					promptFile: promptFile,
-					cwd:        cwd,
-					err:        err,
+					taskName:    taskName,
+					promptFile:  promptFile,
+					cwd:         cwd,
+					useWorktree: useWorktree,
+					err:         err,
 				}
 			}
 			// Don't wait for GUI editor to close - return success immediately
 			return editorFinishedMsg{
-				taskName:   taskName,
-				promptFile: promptFile,
-				cwd:        cwd,
-				err:        nil,
+				taskName:    taskName,
+				promptFile:  promptFile,
+				cwd:         cwd,
+				useWorktree: useWorktree,
+				err:         nil,
 			}
 		}
 	}
@@ -672,10 +685,11 @@ func (m Model) openEditor(taskName, promptFile, cwd string) tea.Cmd {
 	c := exec.Command(editor, promptFile)
 	return tea.ExecProcess(c, func(err error) tea.Msg {
 		return editorFinishedMsg{
-			taskName:   taskName,
-			promptFile: promptFile,
-			cwd:        cwd,
-			err:        err,
+			taskName:    taskName,
+			promptFile:  promptFile,
+			cwd:         cwd,
+			useWorktree: useWorktree,
+			err:         err,
 		}
 	})
 }
@@ -982,7 +996,7 @@ func (m Model) updateConfirmMerge(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // updateSettings handles settings popup input
 func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	settingsCount := 4
+	settingsCount := 5
 
 	switch msg.String() {
 	case "ctrl+c":
@@ -1012,6 +1026,8 @@ func (m Model) updateSettings(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 2:
 			m.config.ConfirmBeforeDelete = !m.config.ConfirmBeforeDelete
 		case 3:
+			m.config.UseWorktree = !m.config.UseWorktree
+		case 4:
 			// Cycle through worktree cleanup options: ask -> delete -> keep -> ask
 			switch m.config.Worktrees.Cleanup {
 			case config.WorktreeCleanupAsk:
@@ -1179,10 +1195,18 @@ func (m Model) viewNewTask() string {
 	b.WriteString(m.goalInput.View())
 	b.WriteString("\n\n")
 
-	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("Enter with prompt: create task | Enter without: open editor"))
+	// Worktree toggle
+	worktreeStatus := "[ ]"
+	if m.useWorktree {
+		worktreeStatus = "[x]"
+	}
+	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render(fmt.Sprintf("%s Use worktree", worktreeStatus)))
 	b.WriteString("\n\n")
 
-	help := helpStyle.Render("[tab]next  [ctrl+f]fzf dir  [ctrl+e]open editor  [enter]create  [esc]cancel")
+	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render("Enter with prompt: create task | Enter without: open editor"))
+	b.WriteString("\n")
+
+	help := helpStyle.Render("[tab]next  [ctrl+f]fzf  [ctrl+w]worktree  [ctrl+e]editor  [enter]create  [esc]cancel")
 	b.WriteString(help)
 
 	return m.centerContent(modalStyle.Render(b.String()))
@@ -1376,7 +1400,10 @@ func (m Model) viewSettings() string {
 	// Setting 2: Confirm before delete
 	renderSetting(2, m.config.ConfirmBeforeDelete, "Confirm before delete", "Show confirmation dialog when deleting tasks")
 
-	// Setting 3: Worktree cleanup
+	// Setting 3: Use worktree
+	renderSetting(3, m.config.UseWorktree, "Use worktree", "Use git worktree for new tasks by default")
+
+	// Setting 4: Worktree cleanup
 	cleanupOptions := []string{"Ask", "Delete", "Keep"}
 	cleanupIdx := 0
 	switch m.config.Worktrees.Cleanup {
@@ -1387,7 +1414,7 @@ func (m Model) viewSettings() string {
 	case config.WorktreeCleanupKeep:
 		cleanupIdx = 2
 	}
-	renderMultiOption(3, "Worktree cleanup", "How to handle worktrees when deleting tasks", cleanupOptions, cleanupIdx)
+	renderMultiOption(4, "Worktree cleanup", "How to handle worktrees when deleting tasks", cleanupOptions, cleanupIdx)
 
 	help := helpStyle.Render("[j/k]navigate  [enter/space]toggle  [esc/S]close")
 	b.WriteString(help)

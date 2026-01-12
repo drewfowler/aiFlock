@@ -24,6 +24,7 @@ type Task struct {
 	Cwd          string    `json:"cwd"`
 	Status       Status    `json:"status"`
 	TabName      string    `json:"tab_name"`
+	UseWorktree  bool      `json:"use_worktree"`            // Whether this task requested worktree usage
 	WorktreePath string    `json:"worktree_path,omitempty"` // Absolute path to assigned worktree
 	GitBranch    string    `json:"git_branch,omitempty"`    // Branch name in the worktree
 	RepoRoot     string    `json:"repo_root,omitempty"`     // Root of the git repository

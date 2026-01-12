@@ -63,12 +63,13 @@ func (m *Manager) Save() error {
 
 // CreateOptions holds optional parameters for task creation
 type CreateOptions struct {
+	UseWorktree  bool
 	WorktreePath string
 	GitBranch    string
 	RepoRoot     string
 }
 
-// Create creates a new task
+// Create creates a new task (simple version without worktree)
 func (m *Manager) Create(name, promptFile, cwd string) (*Task, error) {
 	return m.CreateWithOptions(name, promptFile, cwd, nil)
 }
@@ -83,8 +84,9 @@ func (m *Manager) CreateWithOptions(name, promptFile, cwd string, opts *CreateOp
 
 	task := NewTask(id, name, promptFile, cwd)
 
-	// Apply worktree options if provided
+	// Apply options if provided
 	if opts != nil {
+		task.UseWorktree = opts.UseWorktree
 		task.WorktreePath = opts.WorktreePath
 		task.GitBranch = opts.GitBranch
 		task.RepoRoot = opts.RepoRoot
