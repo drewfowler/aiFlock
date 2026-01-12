@@ -61,8 +61,20 @@ func (m *Manager) Save() error {
 	return m.store.Save(tasks)
 }
 
+// CreateOptions holds optional parameters for task creation
+type CreateOptions struct {
+	WorktreePath string
+	GitBranch    string
+	RepoRoot     string
+}
+
 // Create creates a new task
 func (m *Manager) Create(name, promptFile, cwd string) (*Task, error) {
+	return m.CreateWithOptions(name, promptFile, cwd, nil)
+}
+
+// CreateWithOptions creates a new task with optional worktree info
+func (m *Manager) CreateWithOptions(name, promptFile, cwd string, opts *CreateOptions) (*Task, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -70,6 +82,14 @@ func (m *Manager) Create(name, promptFile, cwd string) (*Task, error) {
 	m.counter++
 
 	task := NewTask(id, name, promptFile, cwd)
+
+	// Apply worktree options if provided
+	if opts != nil {
+		task.WorktreePath = opts.WorktreePath
+		task.GitBranch = opts.GitBranch
+		task.RepoRoot = opts.RepoRoot
+	}
+
 	m.tasks[id] = task
 	m.order = append(m.order, id)
 

@@ -17,15 +17,18 @@ const (
 
 // Task represents an AI agent task
 type Task struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	PromptFile string    `json:"prompt_file,omitempty"` // Path to the markdown prompt file (new format)
-	Prompt     string    `json:"prompt,omitempty"`      // Legacy: inline prompt text (for backward compatibility)
-	Cwd        string    `json:"cwd"`
-	Status     Status    `json:"status"`
-	TabName    string    `json:"tab_name"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	PromptFile   string    `json:"prompt_file,omitempty"` // Path to the markdown prompt file (new format)
+	Prompt       string    `json:"prompt,omitempty"`      // Legacy: inline prompt text (for backward compatibility)
+	Cwd          string    `json:"cwd"`
+	Status       Status    `json:"status"`
+	TabName      string    `json:"tab_name"`
+	WorktreePath string    `json:"worktree_path,omitempty"` // Absolute path to assigned worktree
+	GitBranch    string    `json:"git_branch,omitempty"`    // Branch name in the worktree
+	RepoRoot     string    `json:"repo_root,omitempty"`     // Root of the git repository
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // GetPromptOrFile returns the prompt file path, or legacy prompt if no file exists
@@ -100,4 +103,27 @@ func (t *Task) IsActive() bool {
 // NeedsAttention returns true if the task needs user input
 func (t *Task) NeedsAttention() bool {
 	return t.Status == StatusWaiting
+}
+
+// GetID returns the task ID (implements git.TaskWorktreeInfo)
+func (t *Task) GetID() string {
+	return t.ID
+}
+
+// GetCwd returns the task's working directory (implements git.TaskWorktreeInfo)
+func (t *Task) GetCwd() string {
+	return t.Cwd
+}
+
+// GetWorktreePath returns the task's worktree path (implements git.TaskWorktreeInfo)
+func (t *Task) GetWorktreePath() string {
+	return t.WorktreePath
+}
+
+// EffectiveCwd returns the worktree path if set, otherwise the original Cwd
+func (t *Task) EffectiveCwd() string {
+	if t.WorktreePath != "" {
+		return t.WorktreePath
+	}
+	return t.Cwd
 }

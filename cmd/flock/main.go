@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/dfowler/flock/internal/config"
+	"github.com/dfowler/flock/internal/git"
 	"github.com/dfowler/flock/internal/setup"
 	"github.com/dfowler/flock/internal/status"
 	"github.com/dfowler/flock/internal/task"
@@ -73,6 +74,12 @@ func main() {
 		}
 	}
 
+	// Initialize git worktree assigner (nil if disabled)
+	var gitAssigner *git.Assigner
+	if cfg.Worktrees.Enabled {
+		gitAssigner = git.NewAssigner(true, cfg.Worktrees.MaxPerRepo)
+	}
+
 	// Create status update channel
 	statusChan := make(chan tui.StatusUpdate, 100)
 
@@ -84,7 +91,7 @@ func main() {
 	defer watcher.Stop()
 
 	// Create and run TUI
-	model := tui.NewModel(manager, zjController, cfg, statusChan)
+	model := tui.NewModel(manager, zjController, cfg, gitAssigner, statusChan)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 
 	if _, err := p.Run(); err != nil {
