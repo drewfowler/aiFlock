@@ -1,6 +1,10 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"fmt"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 var (
 	// Colors
@@ -108,4 +112,30 @@ func StatusStyle(status string) lipgloss.Style {
 		color = colorSecondary
 	}
 	return statusStyle.Foreground(color)
+}
+
+// Git status styles
+var (
+	gitAheadStyle  = lipgloss.NewStyle().Foreground(colorSuccess) // green
+	gitBehindStyle = lipgloss.NewStyle().Foreground(colorError)   // red
+)
+
+// FormatGitStatus returns a colored string for git ahead/behind status
+func FormatGitStatus(ahead, behind int, isMain bool, hasError bool) string {
+	if hasError {
+		return "-"
+	}
+	if isMain {
+		return "main"
+	}
+	if ahead == 0 && behind == 0 {
+		return "="
+	}
+	if behind == 0 {
+		return gitAheadStyle.Render(fmt.Sprintf("+%d", ahead))
+	}
+	if ahead == 0 {
+		return gitBehindStyle.Render(fmt.Sprintf("-%d", behind))
+	}
+	return gitAheadStyle.Render(fmt.Sprintf("+%d", ahead)) + "/" + gitBehindStyle.Render(fmt.Sprintf("-%d", behind))
 }

@@ -17,16 +17,19 @@ const (
 
 // Task represents an AI agent task
 type Task struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	PromptFile  string    `json:"prompt_file,omitempty"` // Path to the markdown prompt file (new format)
-	Prompt      string    `json:"prompt,omitempty"`      // Legacy: inline prompt text (for backward compatibility)
-	Cwd         string    `json:"cwd"`
-	Status      Status    `json:"status"`
-	TabName     string    `json:"tab_name"`
-	UseWorktree bool      `json:"use_worktree"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	PromptFile   string    `json:"prompt_file,omitempty"` // Path to the markdown prompt file (new format)
+	Prompt       string    `json:"prompt,omitempty"`      // Legacy: inline prompt text (for backward compatibility)
+	Cwd          string    `json:"cwd"`
+	Status       Status    `json:"status"`
+	TabName      string    `json:"tab_name"`
+	UseWorktree  bool      `json:"use_worktree"`
+	WorktreePath string    `json:"worktree_path,omitempty"` // Absolute path to git worktree
+	GitBranch    string    `json:"git_branch,omitempty"`    // Branch name in worktree
+	RepoRoot     string    `json:"repo_root,omitempty"`     // Path to main git repository
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // GetPromptOrFile returns the prompt file path, or legacy prompt if no file exists
