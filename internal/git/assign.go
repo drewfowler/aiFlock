@@ -56,8 +56,16 @@ func (a *Assigner) AssignWorktree(taskID, taskCwd string, activeTasks []TaskWork
 
 	// Check if the task's cwd is already a worktree
 	if IsPathInWorktree(taskCwd) {
-		// Already in a worktree, use as-is
-		return nil, nil
+		// Already in a worktree, return its info
+		branch, err := GetCurrentBranch(taskCwd)
+		if err != nil {
+			return nil, nil
+		}
+		return &WorktreeAssignment{
+			WorktreePath: taskCwd,
+			GitBranch:    branch,
+			RepoRoot:     repoRoot,
+		}, nil
 	}
 
 	a.mu.Lock()
