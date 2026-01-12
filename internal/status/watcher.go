@@ -155,8 +155,45 @@ func (w *Watcher) sendNotification(taskID, taskName, status string) {
 	}
 
 	// Use notify-send for desktop notifications
-	cmd := exec.Command("notify-send", "-u", urgency, title, body)
+	// Try to find the icon in common installation locations
+	iconPath := findIcon()
+	var cmd *exec.Cmd
+	if iconPath != "" {
+		cmd = exec.Command("notify-send", "-u", urgency, "-i", iconPath, title, body)
+	} else {
+		cmd = exec.Command("notify-send", "-u", urgency, title, body)
+	}
 	if err := cmd.Run(); err != nil {
 		log.Printf("failed to send notification: %v", err)
 	}
+}
+
+// findIcon looks for the flock icon in common locations
+func findIcon() string {
+	// Get the executable path to find icon relative to binary
+	execPath, err := os.Executable()
+	if err == nil {
+		execDir := filepath.Dir(execPath)
+		// Check assets directory relative to executable
+		iconPath := filepath.Join(execDir, "assets", "flock-icon.svg")
+		if _, err := os.Stat(iconPath); err == nil {
+			return iconPath
+		}
+	}
+
+	// Check common installation paths
+	paths := []string{
+		"/usr/share/icons/hicolor/scalable/apps/flock.svg",
+		"/usr/local/share/icons/hicolor/scalable/apps/flock.svg",
+		filepath.Join(os.Getenv("HOME"), ".local/share/icons/hicolor/scalable/apps/flock.svg"),
+		filepath.Join(os.Getenv("HOME"), ".flock/flock-icon.svg"),
+	}
+
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+
+	return ""
 }

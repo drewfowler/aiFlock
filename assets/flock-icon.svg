@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Background circle -->
+  <circle cx="32" cy="32" r="30" fill="#1a1a2e"/>
+
+  <!-- Stylized birds/agents representing a flock -->
+  <!-- Center bird (larger, primary) -->
+  <path d="M32 20 L38 28 L32 26 L26 28 Z" fill="#7c3aed"/>
+  <path d="M32 26 L38 28 L32 36 L26 28 Z" fill="#8b5cf6"/>
+
+  <!-- Left bird -->
+  <path d="M18 28 L24 36 L18 34 L12 36 Z" fill="#06b6d4"/>
+  <path d="M18 34 L24 36 L18 44 L12 36 Z" fill="#22d3ee"/>
+
+  <!-- Right bird -->
+  <path d="M46 28 L52 36 L46 34 L40 36 Z" fill="#06b6d4"/>
+  <path d="M46 34 L52 36 L46 44 L40 36 Z" fill="#22d3ee"/>
+
+  <!-- Connection lines (representing coordination) -->
+  <path d="M26 30 Q22 32 20 34" stroke="#4ade80" stroke-width="1.5" fill="none" opacity="0.7"/>
+  <path d="M38 30 Q42 32 44 34" stroke="#4ade80" stroke-width="1.5" fill="none" opacity="0.7"/>
+
+  <!-- Accent ring -->
+  <circle cx="32" cy="32" r="28" fill="none" stroke="#7c3aed" stroke-width="1.5" opacity="0.5"/>
+</svg>
