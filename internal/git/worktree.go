@@ -42,6 +42,16 @@ func GetRepoRoot(path string) (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+// GetCurrentBranch returns the current branch name for the given path
+func GetCurrentBranch(path string) (string, error) {
+	cmd := exec.Command("git", "-C", path, "rev-parse", "--abbrev-ref", "HEAD")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("failed to get current branch: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
 // GetDefaultBranch returns the default branch name (main or master)
 func GetDefaultBranch(repoRoot string) (string, error) {
 	// Try to get the default branch from remote
