@@ -1691,13 +1691,7 @@ func (m Model) renderTasksPanel(width, height int) string {
 	)
 	b.WriteString(lipgloss.NewStyle().Foreground(colorSecondary).Render(stats))
 
-	// Build panel title with git status
-	title := "Tasks"
-	if m.gitStatus != nil && m.gitStatus.Branch != "" {
-		title = title + m.gitStatus.FormatGitStatusIcons()
-	}
-
-	return m.renderPanel(title, b.String(), width, height, true)
+	return m.renderPanel("Task", b.String(), width, height, true)
 }
 
 // renderStatusPanel renders the status panel
