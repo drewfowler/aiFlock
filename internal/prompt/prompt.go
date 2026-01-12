@@ -33,17 +33,36 @@ func NewManager(cfg *config.Config) *Manager {
 	return &Manager{config: cfg}
 }
 
-// EnsureDefaultTemplate creates the default template if it doesn't exist
-func (m *Manager) EnsureDefaultTemplate() error {
-	templatePath := m.config.DefaultTemplatePath()
+// EnsureProjectTemplate creates the project-specific template in .claude/flock/templates/
+// if it doesn't exist. Returns the path to the template.
+func (m *Manager) EnsureProjectTemplate(projectDir string) (string, error) {
+	// Convert to absolute path if needed
+	if !filepath.IsAbs(projectDir) {
+		absPath, err := filepath.Abs(projectDir)
+		if err == nil {
+			projectDir = absPath
+		}
+	}
+
+	// Create .claude/flock/templates directory if needed
+	templatesDir := filepath.Join(projectDir, ".claude", "flock", "templates")
+	if err := os.MkdirAll(templatesDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create templates directory: %w", err)
+	}
+
+	templatePath := filepath.Join(templatesDir, "default.md")
 
 	// Check if template already exists
 	if _, err := os.Stat(templatePath); err == nil {
-		return nil
+		return templatePath, nil
 	}
 
 	// Create the default template
-	return os.WriteFile(templatePath, []byte(defaultTemplateContent), 0644)
+	if err := os.WriteFile(templatePath, []byte(defaultTemplateContent), 0644); err != nil {
+		return "", fmt.Errorf("failed to write template: %w", err)
+	}
+
+	return templatePath, nil
 }
 
 // CreatePromptFile creates a new prompt file from the template
@@ -53,13 +72,13 @@ func (m *Manager) CreatePromptFile(taskID, taskName, workingDir string) (string,
 
 // CreatePromptFileWithGoal creates a new prompt file from the template with an optional goal
 func (m *Manager) CreatePromptFileWithGoal(taskID, taskName, workingDir, goal string) (string, error) {
-	// Ensure default template exists
-	if err := m.EnsureDefaultTemplate(); err != nil {
+	// Ensure project template exists and get its path
+	templatePath, err := m.EnsureProjectTemplate(workingDir)
+	if err != nil {
 		return "", fmt.Errorf("failed to ensure template: %w", err)
 	}
 
 	// Read template
-	templatePath := m.config.DefaultTemplatePath()
 	templateContent, err := os.ReadFile(templatePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read template: %w", err)
@@ -137,10 +156,14 @@ func (m *Manager) DeletePromptFile(taskID string) error {
 	return nil
 }
 
-// ListTemplates returns available template files
-func (m *Manager) ListTemplates() ([]string, error) {
-	entries, err := os.ReadDir(m.config.TemplatesDir)
+// ListTemplates returns available template files for a given project directory
+func (m *Manager) ListTemplates(projectDir string) ([]string, error) {
+	templatesDir := filepath.Join(projectDir, ".claude", "flock", "templates")
+	entries, err := os.ReadDir(templatesDir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil // No templates directory yet
+		}
 		return nil, err
 	}
 
