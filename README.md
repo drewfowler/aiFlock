@@ -1,5 +1,7 @@
 # Flock
 
+**Please don't use!** - This is only a intro to managing multiple agents at the same time for myself. 
+
 A TUI for managing multiple AI coding agents from one dashboard.
 
 ## What It Does
